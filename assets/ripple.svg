@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
-  <!-- Hermarchy: hairline strokes, near-black, no fill. Three concentric ripples around a key dot. -->
-  <g fill="none" stroke="#0a0a0a" stroke-width="0.9" stroke-linecap="round">
-    <circle cx="11" cy="11" r="1.6" fill="#0a0a0a" stroke="none"/>
-    <circle cx="11" cy="11" r="4.6"/>
-    <path d="M4.2 11a6.8 6.8 0 0 1 2-4.8M17.8 11a6.8 6.8 0 0 0-2-4.8M6.2 15.8a6.8 6.8 0 0 0 9.6 0"/>
-    <path d="M2.2 11a8.8 8.8 0 0 1 2.6-6.2M19.8 11a8.8 8.8 0 0 0-2.6-6.2"/>
-  </g>
-</svg>

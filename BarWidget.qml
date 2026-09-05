@@ -64,7 +64,7 @@ BarWidget {
     }
   }
 
-  // assets/ripple.svg redrawn on a Canvas so it follows the bar's live
+  // Ripple glyph drawn on a Canvas so it follows the bar's live
   // foreground colour (a static near-black SVG would vanish on dark themes).
   Component {
     id: ripple

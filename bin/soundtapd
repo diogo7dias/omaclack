@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """soundtapd: keyboard sound daemon for the SoundTap Omarchy plugin.
 
-Reads /dev/input/event* directly, plays WAV samples via per-shot pw-play
-(one short-lived pw-play process per keypress — gives the lowest possible
-latency because pw-play auto-connects and exits as soon as the stream ends).
+Reads /dev/input/event* directly and spawns one short-lived `pw-play` per
+keypress on a per-key Opus file. pw-play auto-connects to PipeWire, decodes
+via libsndfile and exits when the sample ends; nothing stays resident but
+this process sleeping in select().
 
 Stdlib only. No logging, no network. Child of omarchy-shell; dies with it.
 """
 
-import array
 import fcntl
 import json
 import os
@@ -18,9 +18,7 @@ import socket
 import struct
 import subprocess
 import sys
-import threading
 import time
-import wave
 
 # ---------------------------------------------------------------- constants
 
@@ -35,8 +33,8 @@ DEBOUNCE_MS = 30.0
 MODIFIER_GRACE_MS = 100.0
 RESCAN_S = 3.0
 
-RATE = 44100
 MAX_CONCURRENT = 16  # cap on simultaneous pw-play processes
+SAMPLE_EXT = (".opus", ".ogg", ".flac", ".wav")
 
 INPUT_EVENT = struct.Struct("llHHi")
 
@@ -51,120 +49,96 @@ def runtime_dir():
 
 # ---------------------------------------------------------------- packs
 
-def load_wav(path):
-    """Return mono 16-bit samples as array('h'). Downmixes stereo."""
-    with wave.open(path, "rb") as w:
-        ch, width, frames = w.getnchannels(), w.getsampwidth(), w.getnframes()
-        raw = w.readframes(frames)
-    if width != 2:
-        raise ValueError("%s: need 16-bit PCM" % path)
-    data = array.array("h")
-    data.frombytes(raw)
-    if ch > 1:
-        mono = array.array("h", (int(sum(data[i:i + ch]) / ch) for i in range(0, len(data), ch)))
-        data = mono
-    return data
+def _default_file(path):
+    for ext in SAMPLE_EXT:
+        f = os.path.join(path, "default" + ext)
+        if os.path.isfile(f):
+            return f
+    return None
+
+
+def pack_meta(name, root=SOUNDS_DIR):
+    """pack.json contents plus id; name falls back to the folder name."""
+    meta = {}
+    try:
+        with open(os.path.join(root, name, "pack.json")) as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        pass
+    return {"id": name, "name": str(meta.get("name") or name),
+            "credit": str(meta.get("credit") or ""), "source": str(meta.get("source") or "")}
 
 
 class Pack:
+    """Maps keycodes to sample files. <code>.<ext> wins, then pack.json "keys",
+    then default.<ext>. Files are only stat'ed here; pw-play reads them."""
+
     def __init__(self, name, root=SOUNDS_DIR):
         self.name = name
-        self.samples = {}
-        self.default = None
-        self.mouse = None
         path = os.path.join(root, name)
         if not os.path.isdir(path):
             raise FileNotFoundError(path)
-        for fn in os.listdir(path):
-            if not fn.endswith(".wav"):
-                continue
-            stem = fn[:-4]
-            data = load_wav(os.path.join(path, fn))
-            if stem == "default":
-                self.default = data
-            elif stem == "mouse":
-                self.mouse = data
-            elif stem.isdigit():
-                self.samples[int(stem)] = data
+        self.default = _default_file(path)
         if self.default is None:
-            raise FileNotFoundError(os.path.join(path, "default.wav"))
+            raise FileNotFoundError(os.path.join(path, "default.opus"))
+        self.files = {}
+        for fn in os.listdir(path):
+            stem, ext = os.path.splitext(fn)
+            if ext in SAMPLE_EXT and stem.isdigit():
+                self.files[int(stem)] = os.path.join(path, fn)
+        try:
+            with open(os.path.join(path, "pack.json")) as f:
+                keys = json.load(f).get("keys") or {}
+        except (OSError, ValueError):
+            keys = {}
+        for code, fn in keys.items():
+            f = os.path.join(path, os.path.basename(str(fn)))
+            if str(code).isdigit() and int(code) not in self.files and os.path.isfile(f):
+                self.files[int(code)] = f
 
     def sample_for(self, code):
-        s = self.samples.get(code)
-        if s is not None:
-            return s
-        if code >= KEY_MAX_KEYBOARD and self.mouse is not None:
-            return self.mouse
-        return self.default
+        return self.files.get(code, self.default)
 
 
 def list_packs(root=SOUNDS_DIR):
     if not os.path.isdir(root):
         return []
-    return sorted(d for d in os.listdir(root)
-                  if os.path.isfile(os.path.join(root, d, "default.wav")))
+    return sorted(d for d in os.listdir(root) if _default_file(os.path.join(root, d)))
 
 
 # ---------------------------------------------------------------- playback
 
 class OneShotPlayer:
-    """Spawns a fresh pw-play per sample. Lowest latency, simple, no stream state."""
+    """One pw-play per sample; gain is passed as --volume so no audio touches Python."""
 
     def __init__(self):
-        self.lock = threading.Lock()
         self.volume = 0.7
         self.muted = False
-        self.live = 0  # number of in-flight pw-play processes
-        self.stream_ok = True  # last spawn attempt succeeded
+        self.live = []          # in-flight pw-play processes
+        self.stream_ok = True   # last spawn attempt succeeded
 
     def gain(self):
         return 0.0 if self.muted else max(0.0, min(1.0, self.volume))
 
-    def play(self, samples):
-        if self.muted or not samples:
-            return
-        # Apply gain in-place on a copy (cheap for <80ms).
-        g = self.gain()
-        if g == 0.0:
-            return
-        if g != 1.0:
-            samples = array.array("h", (int(s * g) for s in samples))
-        # Cap concurrent pw-play to avoid fork-bomb on key-mash.
-        with self.lock:
-            if self.live >= MAX_CONCURRENT:
-                return
-            self.live += 1
-        threading.Thread(target=self._run, args=(samples,), daemon=True).start()
+    def reap(self):
+        self.live = [p for p in self.live if p.poll() is None]
 
-    def _run(self, samples):
+    def play(self, path):
+        g = self.gain()
+        if g == 0.0 or not path:
+            return
+        self.reap()
+        if len(self.live) >= MAX_CONCURRENT:
+            return
+        self._spawn(["pw-play", "--volume", "%.3f" % g, path])
+
+    def _spawn(self, cmd):
         try:
-            # Build a WAV header around the raw samples and pipe it to pw-play.
-            import io
-            buf = io.BytesIO()
-            with wave.open(buf, "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(RATE)
-                w.writeframes(samples.tobytes())
-            data = buf.getvalue()
-            try:
-                p = subprocess.Popen(
-                    ["pw-play", "-"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                p.stdin.write(data)
-                p.stdin.close()
-                p.wait()
-                with self.lock:
-                    self.stream_ok = True
-            except (BrokenPipeError, OSError, FileNotFoundError):
-                with self.lock:
-                    self.stream_ok = False
-        finally:
-            with self.lock:
-                self.live -= 1
+            self.live.append(subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            self.stream_ok = True
+        except OSError:
+            self.stream_ok = False
 
 
 # ---------------------------------------------------------------- key filtering
@@ -219,7 +193,7 @@ class Controller:
         return {
             "ok": True,
             "pack": self.pack.name if self.pack else None,
-            "packs": list_packs(self.pack_root),
+            "packs": [pack_meta(p, self.pack_root) for p in list_packs(self.pack_root)],
             "volume": int(round(self.player.volume * 100)),
             "muted": self.player.muted,
             "enabled": self.enabled,

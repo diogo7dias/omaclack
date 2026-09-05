@@ -1,4 +1,3 @@
-import array
 import importlib.machinery
 import importlib.util
 import json
@@ -9,7 +8,6 @@ import sys
 import tempfile
 import time
 import unittest
-import wave
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAEMON = os.path.join(ROOT, "bin", "soundtapd")
@@ -34,49 +32,44 @@ class FakePlayer:
         self.stream_ok = True
         self.played = []
 
-    def play(self, samples):
-        self.played.append(samples)
-
-
-def write_wav(path, samples, channels=1):
-    with wave.open(path, "wb") as w:
-        w.setnchannels(channels)
-        w.setsampwidth(2)
-        w.setframerate(44100)
-        w.writeframes(array.array("h", samples).tobytes())
+    def play(self, path):
+        self.played.append(path)
 
 
 class OneShotPlayerTest(unittest.TestCase):
-    """Exercise OneShotPlayer without spawning pw-play by stubbing _run."""
+    """Exercise OneShotPlayer without spawning pw-play by stubbing _spawn."""
 
     def setUp(self):
         self.player = D.OneShotPlayer()
         self.sent = []
-        self.player._run = lambda samples: self.sent.append(samples)
+        self.player._spawn = lambda cmd: self.sent.append(cmd)
 
-    def test_applies_gain(self):
+    def test_passes_gain_and_path_to_pw_play(self):
         self.player.volume = 0.5
-        self.player.play(array.array("h", [1000, -1000]))
-        time.sleep(0.05)
-        self.assertEqual(list(self.sent[0]), [500, -500])
+        self.player.play("/x/30.opus")
+        self.assertEqual(self.sent, [["pw-play", "--volume", "0.500", "/x/30.opus"]])
 
     def test_muted_or_silent_or_empty_plays_nothing(self):
         self.player.muted = True
-        self.player.play(array.array("h", [1000]))
+        self.player.play("/x/30.opus")
         self.player.muted = False
         self.player.volume = 0.0
-        self.player.play(array.array("h", [1000]))
-        self.player.play(array.array("h", []))
-        time.sleep(0.05)
+        self.player.play("/x/30.opus")
+        self.player.volume = 1.0
+        self.player.play(None)
         self.assertEqual(self.sent, [])
 
-    def test_concurrency_cap(self):
-        self.player.volume = 1.0
-        self.player.live = D.MAX_CONCURRENT
-        self.player.play(array.array("h", [1]))
-        time.sleep(0.05)
+    def test_concurrency_cap_counts_only_running_children(self):
+        class Live:
+            def __init__(self, rc): self.rc = rc
+            def poll(self): return self.rc
+        self.player.live = [Live(None)] * D.MAX_CONCURRENT
+        self.player.play("/x/1.opus")
         self.assertEqual(self.sent, [])
-        self.assertEqual(self.player.live, D.MAX_CONCURRENT)
+        self.player.live = [Live(0)] * D.MAX_CONCURRENT     # all exited
+        self.player.play("/x/1.opus")
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.player.live, [])
 
 
 class KeyFilterTest(unittest.TestCase):
@@ -108,31 +101,36 @@ class KeyFilterTest(unittest.TestCase):
 class PackTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        d = os.path.join(self.tmp.name, "p")
-        os.makedirs(d)
-        write_wav(os.path.join(d, "default.wav"), [1, 2, 3])
-        write_wav(os.path.join(d, "30.wav"), [9, 9])
-        write_wav(os.path.join(d, "mouse.wav"), [5])
-        write_wav(os.path.join(d, "stereo.wav"), [10, 20, 30, 40], channels=2)
+        self.d = os.path.join(self.tmp.name, "p")
+        os.makedirs(self.d)
+        for f in ("default.opus", "30.opus", "row1.opus"):
+            open(os.path.join(self.d, f), "wb").write(b"x")
+        with open(os.path.join(self.d, "pack.json"), "w") as f:
+            json.dump({"name": "Pack P", "credit": "someone", "source": "https://x",
+                       "keys": {"31": "row1.opus", "30": "row1.opus", "99": "missing.opus"}}, f)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_lookup_and_fallbacks(self):
+    def test_lookup_order_and_fallbacks(self):
         p = D.Pack("p", self.tmp.name)
-        self.assertEqual(list(p.sample_for(30)), [9, 9])
-        self.assertEqual(list(p.sample_for(31)), [1, 2, 3])
-        self.assertEqual(list(p.sample_for(272)), [5])
+        self.assertTrue(p.sample_for(30).endswith("/30.opus"))       # explicit file wins over keys map
+        self.assertTrue(p.sample_for(31).endswith("/row1.opus"))     # keys map
+        self.assertTrue(p.sample_for(99).endswith("/default.opus"))  # mapped file missing
+        self.assertTrue(p.sample_for(272).endswith("/default.opus")) # mouse
         self.assertEqual(D.list_packs(self.tmp.name), ["p"])
+
+    def test_meta(self):
+        m = D.pack_meta("p", self.tmp.name)
+        self.assertEqual(m, {"id": "p", "name": "Pack P", "credit": "someone", "source": "https://x"})
+        os.makedirs(os.path.join(self.tmp.name, "bare"))
+        open(os.path.join(self.tmp.name, "bare", "default.wav"), "wb").write(b"x")
+        self.assertEqual(D.pack_meta("bare", self.tmp.name)["name"], "bare")
 
     def test_missing_default_raises(self):
         os.makedirs(os.path.join(self.tmp.name, "empty"))
         with self.assertRaises(FileNotFoundError):
             D.Pack("empty", self.tmp.name)
-
-    def test_stereo_downmix(self):
-        s = D.load_wav(os.path.join(self.tmp.name, "p", "stereo.wav"))
-        self.assertEqual(list(s), [15, 35])
 
 
 class ControllerTest(unittest.TestCase):
@@ -141,7 +139,7 @@ class ControllerTest(unittest.TestCase):
         self.ctl = D.Controller(self.player, SOUNDS)
 
     def test_loads_first_pack_by_default(self):
-        self.assertEqual(self.ctl.pack.name, "cherry-blue")
+        self.assertEqual(self.ctl.pack.name, "alps-blue")
 
     def test_volume_clamped(self):
         self.assertEqual(self.ctl.handle({"cmd": "volume", "value": 250})["volume"], 100)
@@ -153,7 +151,9 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(self.ctl.handle({"cmd": "load", "pack": "topre"})["pack"], "topre")
         st = self.ctl.handle({"cmd": "status"})
         self.assertEqual(st["pack"], "topre")
-        self.assertIn("typewrite", st["packs"])
+        ids = [p["id"] for p in st["packs"]]
+        self.assertIn("mx-blue", ids)
+        self.assertEqual(st["packs"][ids.index("topre")]["credit"], "Mechvibes")
         bad = self.ctl.handle({"cmd": "load", "pack": "nope"})
         self.assertFalse(bad["ok"])
 
@@ -172,21 +172,27 @@ class ControllerTest(unittest.TestCase):
 
 
 class SoundPacksTest(unittest.TestCase):
-    def test_every_pack_file_is_short_mono_44k(self):
-        packs = D.list_packs(SOUNDS)
-        self.assertEqual(packs, ["cherry-blue", "cherry-brown", "topre", "typewrite"])
-        for p in packs:
+    PACKS = ["alps-blue", "box-navy", "buckling-spring", "holy-panda",
+             "mx-black", "mx-blue", "mx-brown", "mx-red", "topre"]
+
+    def test_every_pack_is_credited_opus_and_small(self):
+        self.assertEqual(D.list_packs(SOUNDS), self.PACKS)
+        for p in self.PACKS:
             d = os.path.join(SOUNDS, p)
-            files = [f for f in os.listdir(d) if f.endswith(".wav")]
-            self.assertGreaterEqual(len(files), 10, p)
-            self.assertIn("default.wav", files)
+            meta = json.load(open(os.path.join(d, "pack.json")))
+            for k in ("name", "credit", "source", "license"):
+                self.assertTrue(meta.get(k), "%s missing %s" % (p, k))
+            files = [f for f in os.listdir(d) if f != "pack.json"]
+            self.assertIn("default.opus", files)
             for f in files:
-                with wave.open(os.path.join(d, f)) as w:
-                    self.assertEqual(w.getnchannels(), 1, f)
-                    self.assertEqual(w.getframerate(), 44100, f)
-                    self.assertEqual(w.getsampwidth(), 2, f)
-                    self.assertLess(w.getnframes() / 44100.0, 0.080, "%s/%s too long" % (p, f))
-                    self.assertGreater(w.getnframes(), 400, f)
+                self.assertTrue(f.endswith(".opus"), f)
+                with open(os.path.join(d, f), "rb") as fh:
+                    head = fh.read(4)
+                self.assertEqual(head, b"OggS", "%s/%s is not an Ogg container" % (p, f))
+                self.assertLess(os.path.getsize(os.path.join(d, f)), 12000, "%s/%s too big" % (p, f))
+            pack = D.Pack(p, SOUNDS)
+            for code in (1, 30, 57, 28, 14, 105):
+                self.assertTrue(os.path.isfile(pack.sample_for(code)))
 
 
 class SocketRoundTripTest(unittest.TestCase):
@@ -206,7 +212,7 @@ class SocketRoundTripTest(unittest.TestCase):
             f = c.makefile("rwb", buffering=0)
             hello = json.loads(f.readline())
             self.assertEqual(hello["evt"], "hello")
-            self.assertEqual(hello["pack"], "cherry-blue")
+            self.assertEqual(hello["pack"], "alps-blue")
 
             def rpc(obj):
                 f.write((json.dumps(obj) + "\n").encode())
@@ -214,7 +220,7 @@ class SocketRoundTripTest(unittest.TestCase):
 
             self.assertEqual(rpc({"cmd": "ping", "t": 5, "id": 1}), {"ok": True, "pong": 5, "id": 1})
             self.assertEqual(rpc({"cmd": "volume", "value": 40})["volume"], 40)
-            self.assertEqual(rpc({"cmd": "load", "pack": "typewrite"})["pack"], "typewrite")
+            self.assertEqual(rpc({"cmd": "load", "pack": "mx-brown"})["pack"], "mx-brown")
             self.assertEqual(rpc({"cmd": "status"})["volume"], 40)
             self.assertTrue(rpc({"cmd": "play", "key": 57})["ok"])
             self.assertTrue(rpc({"cmd": "quit"})["quit"])

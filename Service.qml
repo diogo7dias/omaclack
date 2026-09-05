@@ -23,12 +23,16 @@ Item {
   // ---- user state (persisted) ----
   property bool enabled: true
   property int volume: 70
-  property string currentPack: "cherry-blue"
+  property string currentPack: "mx-blue"
   property bool mouseEnabled: true
   property var denylist: []          // lower-cased Wayland app ids
 
   // ---- daemon state (live) ----
-  property var packs: []
+  property var packs: []             // [{id, name, credit, source}] from the daemon
+  readonly property var currentPackMeta: {
+    for (var i = 0; i < packs.length; i++) if (packs[i].id === currentPack) return packs[i]
+    return null
+  }
   property bool connected: false
   property bool daemonRunning: false
   property bool inputDenied: false   // daemon could not open /dev/input (not in `input` group)
@@ -182,8 +186,9 @@ Item {
     }
     if (typeof msg.stream === "boolean") streamOk = msg.stream
     if (msg.ok === false && msg.error && String(msg.error).indexOf("sounds/") >= 0 && packs.length) {
-      // Configured pack vanished from disk: fall back to the first one available.
-      setPack(packs[0])
+      // Configured pack vanished from disk: fall back to mx-blue, else the first one available.
+      var ids = packs.map(function(p) { return p.id })
+      setPack(ids.indexOf("mx-blue") >= 0 ? "mx-blue" : ids[0])
     }
   }
 

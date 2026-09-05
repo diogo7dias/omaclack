@@ -21,7 +21,8 @@ Panel {
   readonly property color dimFg: Qt.darker(fg, 1.45)
   readonly property string mono: bar ? bar.fontFamily : Style.font.family
   readonly property bool live: service && service.connected
-  readonly property var packs: service && service.packs.length ? service.packs : ["cherry-blue", "cherry-brown", "topre", "typewrite"]
+  readonly property var packs: service ? service.packs : []
+  readonly property var packMeta: service ? service.currentPackMeta : null
 
   function switchPanel(direction) {
     if (bar && typeof bar.switchPanelFrom === "function") return bar.switchPanelFrom(root.barIdentity, direction)
@@ -149,8 +150,8 @@ Panel {
             model: root.packs
             Button {
               required property var modelData
-              readonly property bool isCurrent: root.service && root.service.currentPack === String(modelData)
-              text: String(modelData)
+              readonly property bool isCurrent: root.service && root.service.currentPack === modelData.id
+              text: modelData.name
               fontFamily: root.mono
               fontSize: Style.font.caption
               foreground: root.fg
@@ -161,21 +162,28 @@ Panel {
               opacity: isCurrent ? 1.0 : 0.6
               onClicked: {
                 if (!root.service) return
-                root.service.setPack(String(modelData))
+                root.service.setPack(modelData.id)
                 previewTimer.restart()
               }
             }
           }
 
-          Button {
-            text: "get more packs"
-            iconText: "󰏌"
-            fontFamily: root.mono
-            fontSize: Style.font.caption
-            foreground: root.dimFg
-            horizontalPadding: Style.space(8)
-            verticalPadding: Style.space(3)
-            onClicked: if (root.bar) root.bar.run("xdg-open https://github.com/ddm/soundtap#sound-packs")
+        }
+
+        // Credit for the recording the current pack was cut from. Click opens the source repo.
+        Text {
+          visible: !!root.packMeta && root.packMeta.credit !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.packMeta ? "sounds: " + root.packMeta.credit + " (MIT)" : ""
+          color: root.dimFg
+          font.family: root.mono
+          font.pixelSize: Style.font.caption
+          font.underline: creditHover.hovered
+          elide: Text.ElideRight
+          HoverHandler { id: creditHover; cursorShape: Qt.PointingHandCursor }
+          TapHandler {
+            onTapped: if (root.bar && root.packMeta && root.packMeta.source) root.bar.run("xdg-open " + root.packMeta.source)
           }
         }
       }
