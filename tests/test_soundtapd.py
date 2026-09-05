@@ -27,15 +27,15 @@ def load_daemon():
 D = load_daemon()
 
 
-class FakeMixer:
+class FakePlayer:
     def __init__(self):
         self.volume = 0.7
         self.muted = False
         self.stream_ok = True
-        self.triggered = []
+        self.played = []
 
-    def trigger(self, samples):
-        self.triggered.append(samples)
+    def play(self, samples):
+        self.played.append(samples)
 
 
 def write_wav(path, samples, channels=1):
@@ -46,25 +46,37 @@ def write_wav(path, samples, channels=1):
         w.writeframes(array.array("h", samples).tobytes())
 
 
-class MixChunkTest(unittest.TestCase):
-    def test_sums_voices_and_drops_finished(self):
-        a = array.array("h", [100, 100, 100])
-        b = array.array("h", [1, 1, 1, 1, 1])
-        voices = [[a, 0], [b, 0]]
-        out = D.mix_chunk(voices, 4, 1.0)
-        self.assertEqual(list(out), [101, 101, 101, 1])
-        self.assertEqual(len(voices), 1)  # a finished, b still has 1 frame
-        self.assertEqual(voices[0][1], 4)
+class OneShotPlayerTest(unittest.TestCase):
+    """Exercise OneShotPlayer without spawning pw-play by stubbing _run."""
 
-    def test_clips_and_applies_gain(self):
-        a = array.array("h", [30000])
-        b = array.array("h", [30000])
-        out = D.mix_chunk([[a, 0], [b, 0]], 1, 1.0)
-        self.assertEqual(out[0], 32767)
-        out = D.mix_chunk([[array.array("h", [-30000]), 0], [array.array("h", [-30000]), 0]], 1, 1.0)
-        self.assertEqual(out[0], -32768)
-        out = D.mix_chunk([[array.array("h", [1000]), 0]], 1, 0.5)
-        self.assertEqual(out[0], 500)
+    def setUp(self):
+        self.player = D.OneShotPlayer()
+        self.sent = []
+        self.player._run = lambda samples: self.sent.append(samples)
+
+    def test_applies_gain(self):
+        self.player.volume = 0.5
+        self.player.play(array.array("h", [1000, -1000]))
+        time.sleep(0.05)
+        self.assertEqual(list(self.sent[0]), [500, -500])
+
+    def test_muted_or_silent_or_empty_plays_nothing(self):
+        self.player.muted = True
+        self.player.play(array.array("h", [1000]))
+        self.player.muted = False
+        self.player.volume = 0.0
+        self.player.play(array.array("h", [1000]))
+        self.player.play(array.array("h", []))
+        time.sleep(0.05)
+        self.assertEqual(self.sent, [])
+
+    def test_concurrency_cap(self):
+        self.player.volume = 1.0
+        self.player.live = D.MAX_CONCURRENT
+        self.player.play(array.array("h", [1]))
+        time.sleep(0.05)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.player.live, D.MAX_CONCURRENT)
 
 
 class KeyFilterTest(unittest.TestCase):
@@ -125,15 +137,15 @@ class PackTest(unittest.TestCase):
 
 class ControllerTest(unittest.TestCase):
     def setUp(self):
-        self.mixer = FakeMixer()
-        self.ctl = D.Controller(self.mixer, SOUNDS)
+        self.player = FakePlayer()
+        self.ctl = D.Controller(self.player, SOUNDS)
 
     def test_loads_first_pack_by_default(self):
         self.assertEqual(self.ctl.pack.name, "cherry-blue")
 
     def test_volume_clamped(self):
         self.assertEqual(self.ctl.handle({"cmd": "volume", "value": 250})["volume"], 100)
-        self.assertEqual(self.mixer.volume, 1.0)
+        self.assertEqual(self.player.volume, 1.0)
         self.assertEqual(self.ctl.handle({"cmd": "volume", "value": -5})["volume"], 0)
 
     def test_mute_load_and_status(self):
@@ -149,7 +161,7 @@ class ControllerTest(unittest.TestCase):
         r = self.ctl.handle({"cmd": "play", "key": 30})
         self.assertTrue(r["ok"])
         self.assertGreaterEqual(r["latency_ms"], 0)
-        self.assertEqual(len(self.mixer.triggered), 1)
+        self.assertEqual(len(self.player.played), 1)
         self.ctl.handle({"cmd": "mouse", "value": False})
         self.assertFalse(self.ctl.handle({"cmd": "play", "key": 272})["ok"])
         self.ctl.handle({"cmd": "enable", "value": False})
