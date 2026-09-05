@@ -73,29 +73,17 @@ class OneShotPlayerTest(unittest.TestCase):
 
 
 class KeyFilterTest(unittest.TestCase):
-    def test_debounce_same_key(self):
-        k = D.KeyFilter(debounce_ms=30, grace_ms=100)
-        self.assertEqual(k.on_press(30, 0), [30])
-        self.assertEqual(k.on_press(30, 10), [])
-        self.assertEqual(k.on_press(30, 31), [30])
+    def test_debounce_same_key_only(self):
+        k = D.KeyFilter(debounce_ms=30)
+        self.assertTrue(k.on_press(30, 0))
+        self.assertFalse(k.on_press(30, 10))
+        self.assertTrue(k.on_press(31, 11))      # other key unaffected
+        self.assertTrue(k.on_press(30, 31))
 
-    def test_modifier_alone_is_silent(self):
+    def test_modifiers_sound_on_their_own(self):
         k = D.KeyFilter()
-        self.assertEqual(k.on_press(42, 0), [])
-        k.flush(200)
-        self.assertIsNone(k.next_deadline())
-        self.assertEqual(k.on_press(30, 300), [30])
-
-    def test_modifier_then_key_within_grace_sounds_both(self):
-        k = D.KeyFilter()
-        k.on_press(42, 0)
-        self.assertEqual(k.next_deadline(), 100)
-        self.assertEqual(k.on_press(30, 50), [42, 30])
-
-    def test_modifier_then_key_after_grace_sounds_key_only(self):
-        k = D.KeyFilter()
-        k.on_press(42, 0)
-        self.assertEqual(k.on_press(30, 150), [30])
+        for code in (42, 54, 58, 100, 125):     # shifts, caps lock, altgr, super
+            self.assertTrue(k.on_press(code, 0), code)
 
 
 class PackTest(unittest.TestCase):
@@ -139,7 +127,8 @@ class ControllerTest(unittest.TestCase):
         self.ctl = D.Controller(self.player, SOUNDS)
 
     def test_loads_first_pack_by_default(self):
-        self.assertEqual(self.ctl.pack.name, "alps-blue")
+        self.assertEqual(self.ctl.pack.name, "mx-blue")
+        self.assertEqual(self.ctl.mouse_pack.name, "logitech")
 
     def test_volume_clamped(self):
         self.assertEqual(self.ctl.handle({"cmd": "volume", "value": 250})["volume"], 100)
@@ -154,6 +143,10 @@ class ControllerTest(unittest.TestCase):
         ids = [p["id"] for p in st["packs"]]
         self.assertIn("mx-blue", ids)
         self.assertEqual(st["packs"][ids.index("topre")]["credit"], "Mechvibes")
+        self.assertNotIn("mouse", ids)
+        self.assertEqual([p["id"] for p in st["mouse_packs"]], ["crisp", "logitech", "razer"])
+        self.assertEqual(self.ctl.handle({"cmd": "mousepack", "pack": "razer"})["mouse_pack"], "razer")
+        self.assertFalse(self.ctl.handle({"cmd": "mousepack", "pack": "nope"})["ok"])
         bad = self.ctl.handle({"cmd": "load", "pack": "nope"})
         self.assertFalse(bad["ok"])
 
@@ -162,6 +155,11 @@ class ControllerTest(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertGreaterEqual(r["latency_ms"], 0)
         self.assertEqual(len(self.player.played), 1)
+        self.assertTrue(self.player.played[0].endswith("/mx-blue/30.opus"))
+        self.assertTrue(self.ctl.handle({"cmd": "play", "key": 272})["ok"])
+        self.assertTrue(self.player.played[1].endswith("/mouse/logitech/left.opus"))
+        self.assertTrue(self.ctl.handle({"cmd": "play", "key": 273})["ok"])
+        self.assertTrue(self.player.played[2].endswith("/mouse/logitech/right.opus"))
         self.ctl.handle({"cmd": "mouse", "value": False})
         self.assertFalse(self.ctl.handle({"cmd": "play", "key": 272})["ok"])
         self.ctl.handle({"cmd": "enable", "value": False})
@@ -175,9 +173,12 @@ class SoundPacksTest(unittest.TestCase):
     PACKS = ["alps-blue", "box-navy", "buckling-spring", "holy-panda",
              "mx-black", "mx-blue", "mx-brown", "mx-red", "topre"]
 
+    MOUSE = ["crisp", "logitech", "razer"]
+
     def test_every_pack_is_credited_opus_and_small(self):
         self.assertEqual(D.list_packs(SOUNDS), self.PACKS)
-        for p in self.PACKS:
+        self.assertEqual(D.list_packs(os.path.join(SOUNDS, "mouse")), self.MOUSE)
+        for p in self.PACKS + ["mouse/" + m for m in self.MOUSE]:
             d = os.path.join(SOUNDS, p)
             meta = json.load(open(os.path.join(d, "pack.json")))
             for k in ("name", "credit", "source", "license"):
@@ -191,8 +192,27 @@ class SoundPacksTest(unittest.TestCase):
                 self.assertEqual(head, b"OggS", "%s/%s is not an Ogg container" % (p, f))
                 self.assertLess(os.path.getsize(os.path.join(d, f)), 12000, "%s/%s too big" % (p, f))
             pack = D.Pack(p, SOUNDS)
-            for code in (1, 30, 57, 28, 14, 105):
+            for code in (1, 30, 57, 28, 14, 105, 272, 273):
                 self.assertTrue(os.path.isfile(pack.sample_for(code)))
+
+    def test_every_sample_opens_in_libsndfile(self):
+        """pw-play decodes via libsndfile; a rejected file is a silent key."""
+        import ctypes
+        sf = ctypes.CDLL("libsndfile.so.1")
+        sf.sf_open.restype = ctypes.c_void_p
+        sf.sf_close.argtypes = [ctypes.c_void_p]
+        info = (ctypes.c_int64 * 8)()
+        bad = []
+        for root, _, files in os.walk(SOUNDS):
+            for f in files:
+                if not f.endswith(".opus"):
+                    continue
+                h = sf.sf_open(os.path.join(root, f).encode(), 0x10, ctypes.byref(info))
+                if h:
+                    sf.sf_close(h)
+                else:
+                    bad.append(os.path.join(root, f))
+        self.assertEqual(bad, [])
 
 
 class SocketRoundTripTest(unittest.TestCase):
@@ -212,7 +232,7 @@ class SocketRoundTripTest(unittest.TestCase):
             f = c.makefile("rwb", buffering=0)
             hello = json.loads(f.readline())
             self.assertEqual(hello["evt"], "hello")
-            self.assertEqual(hello["pack"], "alps-blue")
+            self.assertEqual(hello["pack"], "mx-blue")
 
             def rpc(obj):
                 f.write((json.dumps(obj) + "\n").encode())

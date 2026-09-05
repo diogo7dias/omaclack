@@ -23,6 +23,8 @@ Panel {
   readonly property bool live: service && service.connected
   readonly property var packs: service ? service.packs : []
   readonly property var packMeta: service ? service.currentPackMeta : null
+  readonly property var mousePacks: service ? service.mousePacks : []
+  readonly property var mousePackMeta: service ? service.mousePackMeta : null
 
   function switchPanel(direction) {
     if (bar && typeof bar.switchPanelFrom === "function") return bar.switchPanelFrom(root.barIdentity, direction)
@@ -198,37 +200,91 @@ Panel {
       PanelSeparator { foreground: root.fg }
 
       // ---- 4. mouse clicks ----
-      Item {
+      Column {
         width: parent.width
-        height: Math.max(mouseLabel.implicitHeight, mouseSwitch.implicitHeight)
-        Column {
-          id: mouseLabel
-          anchors.left: parent.left
-          anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.space(2)
-          Text {
-            textFormat: Text.PlainText
-            text: "Mouse clicks"
-            color: root.fg
-            font.family: root.mono
-            font.pixelSize: Style.font.body
+        spacing: Style.space(6)
+
+        Item {
+          width: parent.width
+          height: Math.max(mouseLabel.implicitHeight, mouseSwitch.implicitHeight)
+          Column {
+            id: mouseLabel
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(2)
+            Text {
+              textFormat: Text.PlainText
+              text: "Mouse clicks"
+              color: root.fg
+              font.family: root.mono
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              textFormat: Text.PlainText
+              text: "sound on button press"
+              color: root.dimFg
+              font.family: root.mono
+              font.pixelSize: Style.font.caption
+            }
           }
-          Text {
-            textFormat: Text.PlainText
-            text: "sound on button press"
-            color: root.dimFg
-            font.family: root.mono
-            font.pixelSize: Style.font.caption
+          ToggleSwitch {
+            id: mouseSwitch
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            foreground: root.fg
+            trackHeight: 18
+            checked: root.service ? root.service.mouseEnabled : false
+            onToggled: if (root.service) root.service.setMouseEnabled(!root.service.mouseEnabled)
           }
         }
-        ToggleSwitch {
-          id: mouseSwitch
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          foreground: root.fg
-          trackHeight: 18
-          checked: root.service ? root.service.mouseEnabled : false
-          onToggled: if (root.service) root.service.setMouseEnabled(!root.service.mouseEnabled)
+
+        Flow {
+          width: parent.width
+          spacing: Style.space(6)
+          visible: root.service ? root.service.mouseEnabled : false
+          Repeater {
+            model: root.mousePacks
+            Button {
+              required property var modelData
+              readonly property bool isCurrent: root.service && root.service.mousePack === modelData.id
+              text: modelData.name
+              fontFamily: root.mono
+              fontSize: Style.font.caption
+              foreground: root.fg
+              selected: isCurrent
+              bordered: true
+              horizontalPadding: Style.space(8)
+              verticalPadding: Style.space(3)
+              opacity: isCurrent ? 1.0 : 0.6
+              onClicked: {
+                if (!root.service) return
+                root.service.setMousePack(modelData.id)
+                mousePreviewTimer.restart()
+              }
+            }
+          }
+        }
+
+        Text {
+          visible: (root.service ? root.service.mouseEnabled : false) && !!root.mousePackMeta && root.mousePackMeta.credit !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.mousePackMeta ? "sounds: " + root.mousePackMeta.credit : ""
+          color: root.dimFg
+          font.family: root.mono
+          font.pixelSize: Style.font.caption
+          font.underline: mouseCreditHover.hovered
+          elide: Text.ElideRight
+          HoverHandler { id: mouseCreditHover; cursorShape: Qt.PointingHandCursor }
+          TapHandler {
+            onTapped: if (root.bar && root.mousePackMeta && root.mousePackMeta.source) root.bar.run("xdg-open " + root.mousePackMeta.source)
+          }
+        }
+
+        Timer {
+          id: mousePreviewTimer
+          interval: 120
+          onTriggered: if (root.service) root.service.preview(272)
         }
       }
 

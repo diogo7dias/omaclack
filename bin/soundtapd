@@ -26,11 +26,7 @@ EV_KEY = 0x01
 KEY_MAX_KEYBOARD = 0x100
 BTN_MOUSE_MIN, BTN_MOUSE_MAX = 0x110, 0x117
 
-# Modifiers wait for a companion key before sounding.
-MODIFIERS = {29, 42, 54, 56, 97, 100, 125, 126, 58}
-
 DEBOUNCE_MS = 30.0
-MODIFIER_GRACE_MS = 100.0
 RESCAN_S = 3.0
 
 MAX_CONCURRENT = 16  # cap on simultaneous pw-play processes
@@ -40,6 +36,7 @@ INPUT_EVENT = struct.Struct("llHHi")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(os.path.dirname(HERE), "sounds")
+MOUSE_DIR = os.path.join(SOUNDS_DIR, "mouse")
 
 
 def runtime_dir():
@@ -106,6 +103,10 @@ def list_packs(root=SOUNDS_DIR):
     return sorted(d for d in os.listdir(root) if _default_file(os.path.join(root, d)))
 
 
+def first_or_none(names, preferred):
+    return preferred if preferred in names else (names[0] if names else None)
+
+
 # ---------------------------------------------------------------- playback
 
 class OneShotPlayer:
@@ -144,56 +145,54 @@ class OneShotPlayer:
 # ---------------------------------------------------------------- key filtering
 
 class KeyFilter:
-    def __init__(self, debounce_ms=DEBOUNCE_MS, grace_ms=MODIFIER_GRACE_MS):
+    """Drops repeats of the same key inside the debounce window. Every key
+    sounds on its own, modifiers included."""
+
+    def __init__(self, debounce_ms=DEBOUNCE_MS):
         self.debounce_ms = debounce_ms
-        self.grace_ms = grace_ms
         self.last = {}
-        self.pending = []
 
     def on_press(self, code, now):
         t = self.last.get(code)
         if t is not None and now - t < self.debounce_ms:
-            return []
+            return False
         self.last[code] = now
-        if code in MODIFIERS:
-            self.pending.append((code, now))
-            return []
-        out = [c for c, t0 in self.pending if now - t0 <= self.grace_ms]
-        self.pending = []
-        out.append(code)
-        return out
-
-    def flush(self, now):
-        self.pending = [(c, t) for c, t in self.pending if now - t <= self.grace_ms]
-
-    def next_deadline(self):
-        if not self.pending:
-            return None
-        return min(t for _, t in self.pending) + self.grace_ms
+        return True
 
 
 # ---------------------------------------------------------------- controller
 
 class Controller:
-    def __init__(self, player, pack_root=SOUNDS_DIR):
+    def __init__(self, player, pack_root=SOUNDS_DIR, mouse_root=MOUSE_DIR):
         self.player = player
         self.pack_root = pack_root
+        self.mouse_root = mouse_root
         self.pack = None
+        self.mouse_pack = None
         self.mouse_enabled = True
         self.enabled = True
-        packs = list_packs(pack_root)
-        if packs:
-            self.load_pack(packs[0])
+        first = first_or_none(list_packs(pack_root), "mx-blue")
+        if first:
+            self.load_pack(first)
+        first = first_or_none(list_packs(mouse_root), "logitech")
+        if first:
+            self.load_mouse_pack(first)
 
     def load_pack(self, name):
         self.pack = Pack(name, self.pack_root)
         return self.pack.name
+
+    def load_mouse_pack(self, name):
+        self.mouse_pack = Pack(name, self.mouse_root)
+        return self.mouse_pack.name
 
     def status(self):
         return {
             "ok": True,
             "pack": self.pack.name if self.pack else None,
             "packs": [pack_meta(p, self.pack_root) for p in list_packs(self.pack_root)],
+            "mouse_pack": self.mouse_pack.name if self.mouse_pack else None,
+            "mouse_packs": [pack_meta(p, self.mouse_root) for p in list_packs(self.mouse_root)],
             "volume": int(round(self.player.volume * 100)),
             "muted": self.player.muted,
             "enabled": self.enabled,
@@ -202,11 +201,16 @@ class Controller:
         }
 
     def play(self, code, t0=None):
-        if not self.enabled or self.pack is None:
+        if not self.enabled:
             return None
-        if code >= KEY_MAX_KEYBOARD and not self.mouse_enabled:
+        pack = self.pack
+        if code >= KEY_MAX_KEYBOARD:
+            if not self.mouse_enabled:
+                return None
+            pack = self.mouse_pack or pack
+        if pack is None:
             return None
-        self.player.play(self.pack.sample_for(code))
+        self.player.play(pack.sample_for(code))
         t1 = time.monotonic()
         return round((t1 - (t0 if t0 is not None else t1)) * 1000.0, 2)
 
@@ -219,6 +223,8 @@ class Controller:
                 return {"ok": lat is not None, "latency_ms": lat}
             if cmd == "load":
                 return {"ok": True, "pack": self.load_pack(str(msg.get("pack", "")))}
+            if cmd == "mousepack":
+                return {"ok": True, "mouse_pack": self.load_mouse_pack(str(msg.get("pack", "")))}
             if cmd == "volume":
                 v = max(0, min(100, int(msg.get("value", 70))))
                 self.player.volume = v / 100.0
@@ -484,17 +490,12 @@ def main(argv):
             rl.append(server.client)
         if parent_fd is not None:
             rl.append(parent_fd)
-        deadline = keys.next_deadline()
-        timeout = RESCAN_S
-        if deadline is not None:
-            timeout = max(0.0, min(timeout, deadline / 1000.0 - now))
         try:
-            ready, _, _ = select.select(rl, [], [], timeout)
+            ready, _, _ = select.select(rl, [], [], RESCAN_S)
         except (InterruptedError, OSError):
             continue
         now = time.monotonic()
         now_ms = now * 1000.0
-        keys.flush(now_ms)
         for fd in ready:
             if fd is server.srv:
                 server.accept()
@@ -518,10 +519,11 @@ def main(argv):
                         running = False
             else:
                 for code in inputs.read_presses(fd):
-                    for c in keys.on_press(code, now_ms):
-                        lat = ctl.play(c, now)
-                        if lat is not None:
-                            emit({"evt": "key", "key": c, "latency_ms": lat})
+                    if not keys.on_press(code, now_ms):
+                        continue
+                    lat = ctl.play(code, now)
+                    if lat is not None:
+                        emit({"evt": "key", "key": code, "latency_ms": lat})
 
     server.close()
     return 0

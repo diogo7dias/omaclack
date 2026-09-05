@@ -25,14 +25,18 @@ Item {
   property int volume: 70
   property string currentPack: "mx-blue"
   property bool mouseEnabled: true
+  property string mousePack: "logitech"
   property var denylist: []          // lower-cased Wayland app ids
 
   // ---- daemon state (live) ----
   property var packs: []             // [{id, name, credit, source}] from the daemon
-  readonly property var currentPackMeta: {
-    for (var i = 0; i < packs.length; i++) if (packs[i].id === currentPack) return packs[i]
+  property var mousePacks: []
+  function metaFor(list, id) {
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i]
     return null
   }
+  readonly property var currentPackMeta: metaFor(packs, currentPack)
+  readonly property var mousePackMeta: metaFor(mousePacks, mousePack)
   property bool connected: false
   property bool daemonRunning: false
   property bool inputDenied: false   // daemon could not open /dev/input (not in `input` group)
@@ -70,6 +74,12 @@ Item {
     send({ cmd: "load", pack: currentPack })
     save()
   }
+  function setMousePack(name) {
+    if (!name) return
+    mousePack = String(name)
+    send({ cmd: "mousepack", pack: mousePack })
+    save()
+  }
   function setMouseEnabled(v) {
     mouseEnabled = !!v
     send({ cmd: "mouse", value: mouseEnabled })
@@ -104,6 +114,7 @@ Item {
       if (typeof c.volume === "number") volume = Math.max(0, Math.min(100, Math.round(c.volume)))
       if (typeof c.pack === "string" && c.pack) currentPack = c.pack
       if (typeof c.mouse === "boolean") mouseEnabled = c.mouse
+      if (typeof c.mousePack === "string" && c.mousePack) mousePack = c.mousePack
       if (Array.isArray(c.denylist)) denylist = c.denylist.map(function(s) { return String(s).toLowerCase() })
     } catch (e) { /* corrupt file: keep defaults, overwrite on next save */ }
     configLoaded = true
@@ -113,7 +124,8 @@ Item {
   function save() {
     if (!configLoaded) return
     configFile.setText(JSON.stringify({
-      version: 1, enabled: enabled, volume: volume, pack: currentPack, mouse: mouseEnabled, denylist: denylist
+      version: 1, enabled: enabled, volume: volume, pack: currentPack, mouse: mouseEnabled,
+      mousePack: mousePack, denylist: denylist
     }, null, 2) + "\n")
   }
 
@@ -161,6 +173,7 @@ Item {
     send({ cmd: "load", pack: currentPack })
     send({ cmd: "volume", value: volume })
     send({ cmd: "mouse", value: mouseEnabled })
+    send({ cmd: "mousepack", pack: mousePack })
     send({ cmd: "mute", toggle: effectiveMuted })
     send({ cmd: "status" })
   }
@@ -178,6 +191,7 @@ Item {
       pushLatency(Date.now() - Number(msg.pong))
     }
     if (Array.isArray(msg.packs)) packs = msg.packs
+    if (Array.isArray(msg.mouse_packs)) mousePacks = msg.mouse_packs
     if (msg.evt === "hello") {
       inputDenied = msg.denied === true
       streamOk = msg.stream === true
@@ -185,10 +199,14 @@ Item {
       pushState()
     }
     if (typeof msg.stream === "boolean") streamOk = msg.stream
-    if (msg.ok === false && msg.error && String(msg.error).indexOf("sounds/") >= 0 && packs.length) {
-      // Configured pack vanished from disk: fall back to mx-blue, else the first one available.
-      var ids = packs.map(function(p) { return p.id })
-      setPack(ids.indexOf("mx-blue") >= 0 ? "mx-blue" : ids[0])
+    if (msg.ok === false && msg.error && String(msg.error).indexOf("sounds/") >= 0) {
+      // Configured pack vanished from disk: fall back to the default, else the first one available.
+      var err = String(msg.error)
+      if (err.indexOf("sounds/mouse/") >= 0) {
+        if (mousePacks.length) setMousePack(metaFor(mousePacks, "logitech") ? "logitech" : mousePacks[0].id)
+      } else if (packs.length) {
+        setPack(metaFor(packs, "mx-blue") ? "mx-blue" : packs[0].id)
+      }
     }
   }
 

@@ -53,8 +53,8 @@ omarchy-shell
   same protocol for the CLI, tests and the benchmark.
 - **soundtapd** opens every `/dev/input/event*` it can, `select()`s on them,
   keeps only key-down events for keyboard codes (`< 0x100`) and mouse buttons
-  (`BTN_LEFT..BTN_TASK`). Same key within 30 ms is dropped. Modifiers stay
-  silent unless another key follows within 100 ms.
+  (`BTN_LEFT..BTN_TASK`). Same key within 30 ms is dropped; every other press
+  sounds, modifiers included. Mouse buttons play from a separate mouse pack.
 - **Playback**: each keypress spawns `pw-play --volume <gain> sounds/<pack>/<code>.opus`
   (capped at 16 in flight, children reaped without threads). No audio bytes pass
   through Python: pw-play decodes the Opus file with libsndfile and exits when
@@ -73,6 +73,7 @@ socket (one socket client at a time), `flock()` on `ctl.sock.lock`.
 ```json
 {"cmd": "play", "key": 30}            → {"ok": true, "latency_ms": 0.4}
 {"cmd": "load", "pack": "topre"}      → {"ok": true, "pack": "topre"}
+{"cmd": "mousepack", "pack": "razer"} → {"ok": true, "mouse_pack": "razer"}
 {"cmd": "volume", "value": 70}        → {"ok": true, "volume": 70}
 {"cmd": "mute", "toggle": true}       → {"ok": true, "muted": true}
 {"cmd": "mouse", "value": false}      → {"ok": true, "mouse": false}
@@ -115,9 +116,23 @@ Nine packs ship, all MIT-licensed recordings from two projects:
 | `box-navy`        | Kailh Box Navy  | kbsim per-row                                                   |
 | `alps-blue`       | Alps Blue       | kbsim per-row                                                   |
 
-The panel shows the credit under the pack chips; clicking it opens the source.
-Rebuild from upstream checkouts with `tools/build_sounds.py <mechvibes> <kbsim>`
-(needs `ffmpeg`, build-time only).
+Mouse buttons use their own packs under `sounds/mouse/<pack>/` with
+`left.opus`, `right.opus`, `middle.opus` (side buttons reuse middle):
+
+| pack       | recording                                                        |
+|------------|------------------------------------------------------------------|
+| `logitech` | OwlStorm, [Freesound 320146](https://freesound.org/s/320146/), CC0 |
+| `razer`    | Katsuhira, [Freesound 555394](https://freesound.org/s/555394/), CC0 |
+| `crisp`    | Six Ways, [Freesound 223445](https://freesound.org/s/223445/), CC0 |
+
+These are the trimmed and filtered renders from
+[Omarchy Typetone](https://github.com/phuclh/omarchy-typetone) (MIT).
+
+The panel shows the credit under each set of chips; clicking it opens the
+source. Rebuild from upstream checkouts with
+`tools/build_sounds.py <mechvibes> <kbsim> <typetone>` (needs `ffmpeg` and
+`libsndfile`, build-time only; every file is checked to open in libsndfile
+because that is what `pw-play` decodes with).
 
 Add your own: drop a folder with at least `default.opus` (or `.wav`, `.ogg`,
 `.flac`) into `sounds/` and it appears in the panel on the next connect.
@@ -128,6 +143,9 @@ Add your own: drop a folder with at least `default.opus` (or `.wav`, `.ogg`,
   MIT. The Cherry MX and Topre packs are sliced from its `src/audio/*` sprites.
 - **kbsim** by [Thomas Lai](https://github.com/tplai/kbsim), MIT. The Holy
   Panda, Buckling Spring, Box Navy and Alps Blue packs are its `press/` samples.
+- **Omarchy Typetone** by [phuclh](https://github.com/phuclh/omarchy-typetone),
+  MIT. The mouse packs are its `mouse-sounds/` renders of CC0 Freesound
+  recordings by OwlStorm, Katsuhira and Six Ways.
 
 Both licenses are reproduced in `sounds/LICENSES.md`.
 
@@ -135,7 +153,7 @@ Both licenses are reproduced in `sounds/LICENSES.md`.
 
 ```bash
 python3 -m unittest discover -s tests            # daemon, player, filter, protocol, pack checks
-tools/build_sounds.py <mechvibes> <kbsim>        # re-import sound packs (ffmpeg)
+tools/build_sounds.py <mechvibes> <kbsim> <typetone>   # re-import sound packs (ffmpeg)
 tools/dev-reload                                 # nudge the shell when the plugin dir is a symlink
 ```
 
