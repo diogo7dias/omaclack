@@ -1,0 +1,502 @@
+#!/usr/bin/env python3
+"""soundtapd: keyboard sound daemon for the SoundTap Omarchy plugin.
+
+Reads /dev/input/event* directly, plays WAV samples via per-shot pw-play
+(one short-lived pw-play process per keypress — gives the lowest possible
+latency because pw-play auto-connects and exits as soon as the stream ends).
+
+Stdlib only. No logging, no network. Child of omarchy-shell; dies with it.
+"""
+
+import array
+import fcntl
+import json
+import os
+import select
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+import wave
+
+# ---------------------------------------------------------------- constants
+
+EV_KEY = 0x01
+KEY_MAX_KEYBOARD = 0x100
+BTN_MOUSE_MIN, BTN_MOUSE_MAX = 0x110, 0x117
+
+# Modifiers wait for a companion key before sounding.
+MODIFIERS = {29, 42, 54, 56, 97, 100, 125, 126, 58}
+
+DEBOUNCE_MS = 30.0
+MODIFIER_GRACE_MS = 100.0
+RESCAN_S = 3.0
+
+RATE = 44100
+MAX_CONCURRENT = 16  # cap on simultaneous pw-play processes
+
+INPUT_EVENT = struct.Struct("llHHi")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SOUNDS_DIR = os.path.join(os.path.dirname(HERE), "sounds")
+
+
+def runtime_dir():
+    base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return os.path.join(base, "soundtap")
+
+
+# ---------------------------------------------------------------- packs
+
+def load_wav(path):
+    """Return mono 16-bit samples as array('h'). Downmixes stereo."""
+    with wave.open(path, "rb") as w:
+        ch, width, frames = w.getnchannels(), w.getsampwidth(), w.getnframes()
+        raw = w.readframes(frames)
+    if width != 2:
+        raise ValueError("%s: need 16-bit PCM" % path)
+    data = array.array("h")
+    data.frombytes(raw)
+    if ch > 1:
+        mono = array.array("h", (int(sum(data[i:i + ch]) / ch) for i in range(0, len(data), ch)))
+        data = mono
+    return data
+
+
+class Pack:
+    def __init__(self, name, root=SOUNDS_DIR):
+        self.name = name
+        self.samples = {}
+        self.default = None
+        self.mouse = None
+        path = os.path.join(root, name)
+        if not os.path.isdir(path):
+            raise FileNotFoundError(path)
+        for fn in os.listdir(path):
+            if not fn.endswith(".wav"):
+                continue
+            stem = fn[:-4]
+            data = load_wav(os.path.join(path, fn))
+            if stem == "default":
+                self.default = data
+            elif stem == "mouse":
+                self.mouse = data
+            elif stem.isdigit():
+                self.samples[int(stem)] = data
+        if self.default is None:
+            raise FileNotFoundError(os.path.join(path, "default.wav"))
+
+    def sample_for(self, code):
+        s = self.samples.get(code)
+        if s is not None:
+            return s
+        if code >= KEY_MAX_KEYBOARD and self.mouse is not None:
+            return self.mouse
+        return self.default
+
+
+def list_packs(root=SOUNDS_DIR):
+    if not os.path.isdir(root):
+        return []
+    return sorted(d for d in os.listdir(root)
+                  if os.path.isfile(os.path.join(root, d, "default.wav")))
+
+
+# ---------------------------------------------------------------- playback
+
+class OneShotPlayer:
+    """Spawns a fresh pw-play per sample. Lowest latency, simple, no stream state."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.volume = 0.7
+        self.muted = False
+        self.live = 0  # number of in-flight pw-play processes
+        self.stream_ok = True  # last spawn attempt succeeded
+
+    def gain(self):
+        return 0.0 if self.muted else max(0.0, min(1.0, self.volume))
+
+    def play(self, samples):
+        if self.muted or not samples:
+            return
+        # Apply gain in-place on a copy (cheap for <80ms).
+        g = self.gain()
+        if g == 0.0:
+            return
+        if g != 1.0:
+            samples = array.array("h", (int(s * g) for s in samples))
+        # Cap concurrent pw-play to avoid fork-bomb on key-mash.
+        with self.lock:
+            if self.live >= MAX_CONCURRENT:
+                return
+            self.live += 1
+        threading.Thread(target=self._run, args=(samples,), daemon=True).start()
+
+    def _run(self, samples):
+        try:
+            # Build a WAV header around the raw samples and pipe it to pw-play.
+            import io
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(RATE)
+                w.writeframes(samples.tobytes())
+            data = buf.getvalue()
+            try:
+                p = subprocess.Popen(
+                    ["pw-play", "-"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                p.stdin.write(data)
+                p.stdin.close()
+                p.wait()
+                with self.lock:
+                    self.stream_ok = True
+            except (BrokenPipeError, OSError, FileNotFoundError):
+                with self.lock:
+                    self.stream_ok = False
+        finally:
+            with self.lock:
+                self.live -= 1
+
+
+# ---------------------------------------------------------------- key filtering
+
+class KeyFilter:
+    def __init__(self, debounce_ms=DEBOUNCE_MS, grace_ms=MODIFIER_GRACE_MS):
+        self.debounce_ms = debounce_ms
+        self.grace_ms = grace_ms
+        self.last = {}
+        self.pending = []
+
+    def on_press(self, code, now):
+        t = self.last.get(code)
+        if t is not None and now - t < self.debounce_ms:
+            return []
+        self.last[code] = now
+        if code in MODIFIERS:
+            self.pending.append((code, now))
+            return []
+        out = [c for c, t0 in self.pending if now - t0 <= self.grace_ms]
+        self.pending = []
+        out.append(code)
+        return out
+
+    def flush(self, now):
+        self.pending = [(c, t) for c, t in self.pending if now - t <= self.grace_ms]
+
+    def next_deadline(self):
+        if not self.pending:
+            return None
+        return min(t for _, t in self.pending) + self.grace_ms
+
+
+# ---------------------------------------------------------------- controller
+
+class Controller:
+    def __init__(self, player, pack_root=SOUNDS_DIR):
+        self.player = player
+        self.pack_root = pack_root
+        self.pack = None
+        self.mouse_enabled = True
+        self.enabled = True
+        packs = list_packs(pack_root)
+        if packs:
+            self.load_pack(packs[0])
+
+    def load_pack(self, name):
+        self.pack = Pack(name, self.pack_root)
+        return self.pack.name
+
+    def status(self):
+        return {
+            "ok": True,
+            "pack": self.pack.name if self.pack else None,
+            "packs": list_packs(self.pack_root),
+            "volume": int(round(self.player.volume * 100)),
+            "muted": self.player.muted,
+            "enabled": self.enabled,
+            "mouse": self.mouse_enabled,
+            "stream": self.player.stream_ok,
+        }
+
+    def play(self, code, t0=None):
+        if not self.enabled or self.pack is None:
+            return None
+        if code >= KEY_MAX_KEYBOARD and not self.mouse_enabled:
+            return None
+        self.player.play(self.pack.sample_for(code))
+        t1 = time.monotonic()
+        return round((t1 - (t0 if t0 is not None else t1)) * 1000.0, 2)
+
+    def handle(self, msg):
+        cmd = msg.get("cmd")
+        try:
+            if cmd == "play":
+                t0 = time.monotonic()
+                lat = self.play(int(msg.get("key", 0)), t0)
+                return {"ok": lat is not None, "latency_ms": lat}
+            if cmd == "load":
+                return {"ok": True, "pack": self.load_pack(str(msg.get("pack", "")))}
+            if cmd == "volume":
+                v = max(0, min(100, int(msg.get("value", 70))))
+                self.player.volume = v / 100.0
+                return {"ok": True, "volume": v}
+            if cmd == "mute":
+                self.player.muted = bool(msg.get("toggle", True))
+                return {"ok": True, "muted": self.player.muted}
+            if cmd == "enable":
+                self.enabled = bool(msg.get("value", True))
+                return {"ok": True, "enabled": self.enabled}
+            if cmd == "mouse":
+                self.mouse_enabled = bool(msg.get("value", True))
+                return {"ok": True, "mouse": self.mouse_enabled}
+            if cmd == "status":
+                return self.status()
+            if cmd == "ping":
+                return {"ok": True, "pong": msg.get("t")}
+            if cmd == "quit":
+                return {"ok": True, "quit": True}
+            return {"ok": False, "error": "unknown cmd"}
+        except (FileNotFoundError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------- evdev
+
+class InputReader:
+    def __init__(self):
+        self.fds = {}
+        self.last_scan = 0.0
+        self.denied = False
+
+    def scan(self, now):
+        if now - self.last_scan < RESCAN_S:
+            return
+        self.last_scan = now
+        try:
+            names = os.listdir("/dev/input")
+        except OSError:
+            return
+        open_paths = set(self.fds.values())
+        self.denied = False
+        for n in names:
+            if not n.startswith("event"):
+                continue
+            p = "/dev/input/" + n
+            if p in open_paths:
+                continue
+            try:
+                fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)
+                self.fds[fd] = p
+            except PermissionError:
+                self.denied = True
+            except OSError:
+                pass
+
+    def read_presses(self, fd):
+        try:
+            buf = os.read(fd, INPUT_EVENT.size * 64)
+        except BlockingIOError:
+            return
+        except OSError:
+            self.close(fd)
+            return
+        if not buf:
+            self.close(fd)
+            return
+        for off in range(0, len(buf) - INPUT_EVENT.size + 1, INPUT_EVENT.size):
+            _, _, etype, code, value = INPUT_EVENT.unpack_from(buf, off)
+            if etype != EV_KEY or value != 1:
+                continue
+            if code < KEY_MAX_KEYBOARD or BTN_MOUSE_MIN <= code <= BTN_MOUSE_MAX:
+                yield code
+
+    def close(self, fd):
+        self.fds.pop(fd, None)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------- server
+
+class CtlServer:
+    def __init__(self, path):
+        self.path = path
+        self.lockfd = None
+        self.srv = None
+        self.client = None
+        self.rbuf = b""
+
+    def start(self):
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        self.lockfd = os.open(self.path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(self.lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            sys.exit(2)
+        try:
+            os.unlink(self.path)
+        except FileNotFoundError:
+            pass
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(self.path)
+        os.chmod(self.path, 0o600)
+        self.srv.listen(1)
+        self.srv.setblocking(False)
+
+    def accept(self):
+        try:
+            c, _ = self.srv.accept()
+        except (BlockingIOError, OSError):
+            return
+        if self.client:
+            try:
+                self.client.close()
+            except OSError:
+                pass
+        c.setblocking(False)
+        self.client = c
+        self.rbuf = b""
+
+    def read_messages(self):
+        try:
+            data = self.client.recv(65536)
+        except BlockingIOError:
+            return []
+        except OSError:
+            data = b""
+        if not data:
+            self.drop_client()
+            return []
+        self.rbuf += data
+        out = []
+        while b"\n" in self.rbuf:
+            line, self.rbuf = self.rbuf.split(b"\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                out.append({"cmd": "__bad__"})
+        return out
+
+    def send(self, obj):
+        if not self.client:
+            return
+        try:
+            self.client.sendall((json.dumps(obj, separators=(",", ":")) + "\n").encode())
+        except OSError:
+            self.drop_client()
+
+    def drop_client(self):
+        if self.client:
+            try:
+                self.client.close()
+            except OSError:
+                pass
+        self.client = None
+
+    def close(self):
+        self.drop_client()
+        if self.srv:
+            self.srv.close()
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------- main loop
+
+def main(argv):
+    sock_path = os.path.join(runtime_dir(), "ctl.sock")
+    for a in argv[1:]:
+        if a.startswith("--socket="):
+            sock_path = a.split("=", 1)[1]
+
+    player = OneShotPlayer()
+    ctl = Controller(player)
+    keys = KeyFilter()
+    inputs = InputReader()
+    server = CtlServer(sock_path)
+    server.start()
+
+    running = True
+
+    def on_signal(*_):
+        nonlocal running
+        running = False
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGHUP, on_signal)
+
+    # Die with parent (omarchy-shell).
+    parent_fd = None
+    try:
+        import stat as _stat
+        if _stat.S_ISFIFO(os.fstat(0).st_mode):
+            parent_fd = 0
+    except OSError:
+        pass
+
+    while running:
+        now = time.monotonic()
+        inputs.scan(now)
+        rl = list(inputs.fds) + [server.srv]
+        if server.client:
+            rl.append(server.client)
+        if parent_fd is not None:
+            rl.append(parent_fd)
+        deadline = keys.next_deadline()
+        timeout = RESCAN_S
+        if deadline is not None:
+            timeout = max(0.0, min(timeout, deadline / 1000.0 - now))
+        try:
+            ready, _, _ = select.select(rl, [], [], timeout)
+        except (InterruptedError, OSError):
+            continue
+        now = time.monotonic()
+        now_ms = now * 1000.0
+        keys.flush(now_ms)
+        for fd in ready:
+            if fd is server.srv:
+                server.accept()
+                server.send({"evt": "hello", **ctl.status(), "denied": inputs.denied})
+            elif server.client is not None and fd is server.client:
+                for msg in server.read_messages():
+                    resp = ctl.handle(msg)
+                    resp["id"] = msg.get("id")
+                    server.send(resp)
+                    if resp.get("quit"):
+                        running = False
+            elif fd == parent_fd:
+                try:
+                    if not os.read(parent_fd, 1):
+                        running = False
+                except OSError:
+                    running = False
+            else:
+                for code in inputs.read_presses(fd):
+                    for c in keys.on_press(code, now_ms):
+                        lat = ctl.play(c, now)
+                        if lat is not None and server.client:
+                            server.send({"evt": "key", "key": c, "latency_ms": lat})
+
+    server.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
