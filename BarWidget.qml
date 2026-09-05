@@ -64,8 +64,8 @@ BarWidget {
     }
   }
 
-  // Ripple glyph drawn on a Canvas so it follows the bar's live
-  // foreground colour (a static near-black SVG would vanish on dark themes).
+  // Glyph: a click waveform inside a keycap, drawn on a Canvas so it follows
+  // the bar's live foreground colour and dims when sound is off.
   Component {
     id: ripple
     Canvas {
@@ -82,19 +82,27 @@ BarWidget {
         ctx.clearRect(0, 0, w, h)
         ctx.globalAlpha = dim
         ctx.strokeStyle = ink
-        ctx.fillStyle = ink
         ctx.lineWidth = Math.max(1, 0.9 * s)
         ctx.lineCap = "round"
-        var cx = w / 2, cy = h / 2
-        ctx.beginPath(); ctx.arc(cx, cy, 1.6 * s, 0, Math.PI * 2); ctx.fill()
-        ctx.beginPath(); ctx.arc(cx, cy, 4.6 * s, 0, Math.PI * 2); ctx.stroke()
-        // Middle ring: two upper arcs plus a lower arc, gaps at the diagonals.
-        ctx.beginPath(); ctx.arc(cx, cy, 6.8 * s, Math.PI * 1.02, Math.PI * 1.34); ctx.stroke()
-        ctx.beginPath(); ctx.arc(cx, cy, 6.8 * s, Math.PI * 1.66, Math.PI * 1.98); ctx.stroke()
-        ctx.beginPath(); ctx.arc(cx, cy, 6.8 * s, Math.PI * 0.22, Math.PI * 0.78); ctx.stroke()
-        // Outer ring: upper arcs only.
-        ctx.beginPath(); ctx.arc(cx, cy, 8.8 * s, Math.PI * 1.0, Math.PI * 1.26); ctx.stroke()
-        ctx.beginPath(); ctx.arc(cx, cy, 8.8 * s, Math.PI * 1.74, Math.PI * 2.0); ctx.stroke()
+        ctx.lineJoin = "round"
+        // Keycap: rounded square, 15 units wide.
+        var x = 3.5 * s, y = 3.5 * s, k = 15 * s, r = 2.5 * s
+        ctx.beginPath()
+        ctx.moveTo(x + r, y)
+        ctx.lineTo(x + k - r, y); ctx.arcTo(x + k, y, x + k, y + r, r)
+        ctx.lineTo(x + k, y + k - r); ctx.arcTo(x + k, y + k, x + k - r, y + k, r)
+        ctx.lineTo(x + r, y + k); ctx.arcTo(x, y + k, x, y + k - r, r)
+        ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r)
+        ctx.closePath()
+        ctx.stroke()
+        // Waveform: flat lead-in, sharp attack, decaying swing, flat tail.
+        var pts = [[6, 11], [7.2, 11], [8.2, 8.6], [9.4, 14.2], [10.6, 6.2], [11.8, 14.6], [12.9, 8.4], [13.9, 12.4], [14.8, 11], [16, 11]]
+        ctx.beginPath()
+        for (var i = 0; i < pts.length; i++) {
+          if (i === 0) ctx.moveTo(pts[i][0] * s, pts[i][1] * s)
+          else ctx.lineTo(pts[i][0] * s, pts[i][1] * s)
+        }
+        ctx.stroke()
       }
     }
   }

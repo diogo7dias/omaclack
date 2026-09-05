@@ -4,7 +4,7 @@ Mechanical keyboard typing sounds for [Omarchy](https://omarchy.org) (Quattro sh
 Per-key sound packs cut from real switch recordings, one `pw-play` per
 keypress, no network, no logging. About 800 KB installed.
 
-Bar widget with a ripple glyph. Click it for the panel: on/off, keyboard
+Bar widget with a keycap-and-waveform glyph. Click it for the panel: on/off, keyboard
 volume and pack, mouse clicks with their own volume and pack, ignored apps,
 and a live latency chart. Right-click toggles, the wheel nudges keyboard volume.
 
