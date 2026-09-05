@@ -40,8 +40,8 @@ No sudo at runtime, no systemd units, no extra packages.
 ```
 omarchy-shell
  └─ Service.qml            reactive state, settings file, socket client
-     └─ bin/soundtapd      Python: evdev reader + mixer + JSON socket server
-         └─ pw-play        one raw s16 mono stream, fed 256-frame chunks
+     └─ bin/soundtapd      Python: evdev reader + key filter + JSON socket server
+         └─ pw-play        one short-lived process per keypress, WAV on stdin
 ```
 
 - **Service.qml** spawns the daemon with `Quickshell.Io.Process` (stdin pipe as
@@ -52,10 +52,13 @@ omarchy-shell
   keeps only key-down events for keyboard codes (`< 0x100`) and mouse buttons
   (`BTN_LEFT..BTN_TASK`). Same key within 30 ms is dropped. Modifiers stay
   silent unless another key follows within 100 ms.
-- **Mixer**: samples are preloaded, mixed in a background thread, and written to
-  a single `pw-play --raw` stream. Overlapping keys sum; latency is roughly one
-  chunk (about 6 ms) plus PipeWire's quantum. If the stream cannot start the
-  daemon falls back to one `pw-play` per sound.
+- **Playback**: samples are preloaded; each keypress spawns one `pw-play` with
+  the WAV on stdin (capped at 16 in flight). Overlapping keys overlap naturally.
+  A persistent paced `pw-play --raw` stream was benchmarked against this with
+  `tools/bench_latency.py` and measured identical onset latency (within 2 ms),
+  while the earlier blocking-write stream design was ~770 ms late because the
+  pipe filled with silence ahead of pw-play. One-shot stays: same latency, no
+  stream state to babysit.
 - **Ignore list**: the service watches the focused Wayland toplevel and mutes
   the daemon while its app id is listed. The daemon itself never learns which
   app is focused.
