@@ -27,13 +27,14 @@ D = load_daemon()
 
 class FakePlayer:
     def __init__(self):
-        self.volume = 0.7
         self.muted = False
         self.stream_ok = True
         self.played = []
+        self.volumes = []
 
-    def play(self, path):
+    def play(self, path, volume=1.0):
         self.played.append(path)
+        self.volumes.append(volume)
 
 
 class OneShotPlayerTest(unittest.TestCase):
@@ -45,18 +46,15 @@ class OneShotPlayerTest(unittest.TestCase):
         self.player._spawn = lambda cmd: self.sent.append(cmd)
 
     def test_passes_gain_and_path_to_pw_play(self):
-        self.player.volume = 0.5
-        self.player.play("/x/30.opus")
+        self.player.play("/x/30.opus", 0.5)
         self.assertEqual(self.sent, [["pw-play", "--volume", "0.500", "/x/30.opus"]])
 
     def test_muted_or_silent_or_empty_plays_nothing(self):
         self.player.muted = True
-        self.player.play("/x/30.opus")
+        self.player.play("/x/30.opus", 1.0)
         self.player.muted = False
-        self.player.volume = 0.0
-        self.player.play("/x/30.opus")
-        self.player.volume = 1.0
-        self.player.play(None)
+        self.player.play("/x/30.opus", 0.0)
+        self.player.play(None, 1.0)
         self.assertEqual(self.sent, [])
 
     def test_concurrency_cap_counts_only_running_children(self):
@@ -64,10 +62,10 @@ class OneShotPlayerTest(unittest.TestCase):
             def __init__(self, rc): self.rc = rc
             def poll(self): return self.rc
         self.player.live = [Live(None)] * D.MAX_CONCURRENT
-        self.player.play("/x/1.opus")
+        self.player.play("/x/1.opus", 1.0)
         self.assertEqual(self.sent, [])
         self.player.live = [Live(0)] * D.MAX_CONCURRENT     # all exited
-        self.player.play("/x/1.opus")
+        self.player.play("/x/1.opus", 1.0)
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.player.live, [])
 
@@ -130,10 +128,16 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(self.ctl.pack.name, "mx-blue")
         self.assertEqual(self.ctl.mouse_pack.name, "logitech")
 
-    def test_volume_clamped(self):
+    def test_volumes_clamped_and_separate(self):
         self.assertEqual(self.ctl.handle({"cmd": "volume", "value": 250})["volume"], 100)
-        self.assertEqual(self.player.volume, 1.0)
+        self.assertEqual(self.ctl.handle({"cmd": "mousevolume", "value": 30})["mouse_volume"], 30)
         self.assertEqual(self.ctl.handle({"cmd": "volume", "value": -5})["volume"], 0)
+        st = self.ctl.handle({"cmd": "status"})
+        self.assertEqual((st["volume"], st["mouse_volume"]), (0, 30))
+        self.ctl.handle({"cmd": "volume", "value": 80})
+        self.ctl.handle({"cmd": "play", "key": 30})
+        self.ctl.handle({"cmd": "play", "key": 272})
+        self.assertEqual([round(v, 2) for v in self.player.volumes], [0.8, 0.3])
 
     def test_mute_load_and_status(self):
         self.assertTrue(self.ctl.handle({"cmd": "mute", "toggle": True})["muted"])

@@ -113,19 +113,15 @@ class OneShotPlayer:
     """One pw-play per sample; gain is passed as --volume so no audio touches Python."""
 
     def __init__(self):
-        self.volume = 0.7
         self.muted = False
         self.live = []          # in-flight pw-play processes
         self.stream_ok = True   # last spawn attempt succeeded
 
-    def gain(self):
-        return 0.0 if self.muted else max(0.0, min(1.0, self.volume))
-
     def reap(self):
         self.live = [p for p in self.live if p.poll() is None]
 
-    def play(self, path):
-        g = self.gain()
+    def play(self, path, volume=1.0):
+        g = 0.0 if self.muted else max(0.0, min(1.0, volume))
         if g == 0.0 or not path:
             return
         self.reap()
@@ -171,6 +167,8 @@ class Controller:
         self.mouse_pack = None
         self.mouse_enabled = True
         self.enabled = True
+        self.volume = 0.7        # keyboard
+        self.mouse_volume = 0.7
         first = first_or_none(list_packs(pack_root), "mx-blue")
         if first:
             self.load_pack(first)
@@ -193,7 +191,8 @@ class Controller:
             "packs": [pack_meta(p, self.pack_root) for p in list_packs(self.pack_root)],
             "mouse_pack": self.mouse_pack.name if self.mouse_pack else None,
             "mouse_packs": [pack_meta(p, self.mouse_root) for p in list_packs(self.mouse_root)],
-            "volume": int(round(self.player.volume * 100)),
+            "volume": int(round(self.volume * 100)),
+            "mouse_volume": int(round(self.mouse_volume * 100)),
             "muted": self.player.muted,
             "enabled": self.enabled,
             "mouse": self.mouse_enabled,
@@ -203,14 +202,14 @@ class Controller:
     def play(self, code, t0=None):
         if not self.enabled:
             return None
-        pack = self.pack
+        pack, volume = self.pack, self.volume
         if code >= KEY_MAX_KEYBOARD:
             if not self.mouse_enabled:
                 return None
-            pack = self.mouse_pack or pack
+            pack, volume = self.mouse_pack or pack, self.mouse_volume
         if pack is None:
             return None
-        self.player.play(pack.sample_for(code))
+        self.player.play(pack.sample_for(code), volume)
         t1 = time.monotonic()
         return round((t1 - (t0 if t0 is not None else t1)) * 1000.0, 2)
 
@@ -227,8 +226,12 @@ class Controller:
                 return {"ok": True, "mouse_pack": self.load_mouse_pack(str(msg.get("pack", "")))}
             if cmd == "volume":
                 v = max(0, min(100, int(msg.get("value", 70))))
-                self.player.volume = v / 100.0
+                self.volume = v / 100.0
                 return {"ok": True, "volume": v}
+            if cmd == "mousevolume":
+                v = max(0, min(100, int(msg.get("value", 70))))
+                self.mouse_volume = v / 100.0
+                return {"ok": True, "mouse_volume": v}
             if cmd == "mute":
                 self.player.muted = bool(msg.get("toggle", True))
                 return {"ok": True, "muted": self.player.muted}

@@ -22,7 +22,8 @@ Item {
 
   // ---- user state (persisted) ----
   property bool enabled: true
-  property int volume: 70
+  property int volume: 70            // keyboard
+  property int mouseVolume: 70
   property string currentPack: "mx-blue"
   property bool mouseEnabled: true
   property string mousePack: "logitech"
@@ -66,6 +67,11 @@ Item {
   function setVolume(v) {
     volume = Math.max(0, Math.min(100, Math.round(Number(v) || 0)))
     send({ cmd: "volume", value: volume })
+    save()
+  }
+  function setMouseVolume(v) {
+    mouseVolume = Math.max(0, Math.min(100, Math.round(Number(v) || 0)))
+    send({ cmd: "mousevolume", value: mouseVolume })
     save()
   }
   function setPack(name) {
@@ -112,6 +118,7 @@ Item {
       var c = JSON.parse(text)
       if (typeof c.enabled === "boolean") enabled = c.enabled
       if (typeof c.volume === "number") volume = Math.max(0, Math.min(100, Math.round(c.volume)))
+      if (typeof c.mouseVolume === "number") mouseVolume = Math.max(0, Math.min(100, Math.round(c.mouseVolume)))
       if (typeof c.pack === "string" && c.pack) currentPack = c.pack
       if (typeof c.mouse === "boolean") mouseEnabled = c.mouse
       if (typeof c.mousePack === "string" && c.mousePack) mousePack = c.mousePack
@@ -125,7 +132,7 @@ Item {
     if (!configLoaded) return
     configFile.setText(JSON.stringify({
       version: 1, enabled: enabled, volume: volume, pack: currentPack, mouse: mouseEnabled,
-      mousePack: mousePack, denylist: denylist
+      mousePack: mousePack, mouseVolume: mouseVolume, denylist: denylist
     }, null, 2) + "\n")
   }
 
@@ -172,6 +179,7 @@ Item {
     if (!connected || !configLoaded) return
     send({ cmd: "load", pack: currentPack })
     send({ cmd: "volume", value: volume })
+    send({ cmd: "mousevolume", value: mouseVolume })
     send({ cmd: "mouse", value: mouseEnabled })
     send({ cmd: "mousepack", pack: mousePack })
     send({ cmd: "mute", toggle: effectiveMuted })

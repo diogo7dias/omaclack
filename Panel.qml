@@ -113,7 +113,7 @@ Panel {
         Item {
           width: parent.width
           height: volLabel.implicitHeight
-          PanelSectionHeader { id: volLabel; text: "VOLUME"; foreground: root.fg; fontFamily: root.mono }
+          PanelSectionHeader { id: volLabel; text: "KEYBOARD VOLUME"; foreground: root.fg; fontFamily: root.mono }
           Text {
             anchors.right: parent.right
             textFormat: Text.PlainText
@@ -262,6 +262,39 @@ Panel {
                 mousePreviewTimer.restart()
               }
             }
+          }
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(4)
+          visible: root.service ? root.service.mouseEnabled : false
+
+          Item {
+            width: parent.width
+            height: mouseVolLabel.implicitHeight
+            PanelSectionHeader { id: mouseVolLabel; text: "MOUSE VOLUME"; foreground: root.fg; fontFamily: root.mono }
+            Text {
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              text: (root.service ? root.service.mouseVolume : 0) + "%"
+              color: root.fg
+              font.family: root.mono
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          PanelSlider {
+            bar: root.bar
+            width: parent.width
+            minimum: 0
+            maximum: 100
+            step: 1
+            integer: true
+            value: root.service ? root.service.mouseVolume : 0
+            enabled: !!root.service
+            onMoved: function(v) { if (root.service) root.service.setMouseVolume(v) }
+            onReleased: function(v) { if (root.service) root.service.preview(272) }
           }
         }
 

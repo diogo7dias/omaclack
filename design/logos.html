@@ -1,0 +1,68 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SoundTap logo options</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 32px; font: 14px/1.4 ui-monospace, "JetBrains Mono", monospace; background: #111; color: #cacccc; }
+  h1 { font-size: 16px; letter-spacing: .12em; margin: 0 0 6px; }
+  p { color: #8a8d8d; margin: 0 0 24px; max-width: 70ch; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+  .card { border: 1px solid #2a2d2d; padding: 16px; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
+  .card h2 { grid-column: 1 / -1; font-size: 12px; letter-spacing: .1em; margin: 0; color: #cacccc; }
+  .card small { grid-column: 1 / -1; color: #8a8d8d; }
+  .big svg { width: 96px; height: 96px; display: block; }
+  .bar { display: flex; flex-direction: column; gap: 6px; }
+  .bar div { width: 120px; height: 30px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; box-sizing: border-box; gap: 8px; }
+  .bar div svg { width: 22px; height: 22px; }
+  .dark { background: #000; color: #cacccc; }
+  .light { background: #f2efe8; color: #202020; }
+  .tinted { background: #1b2a2a; color: #9fd3c7; }
+  svg { fill: none; stroke: currentColor; stroke-width: .9; stroke-linecap: round; stroke-linejoin: round; }
+  svg .f { fill: currentColor; stroke: none; }
+</style>
+<h1>SOUNDTAP · BAR GLYPH OPTIONS</h1>
+<p>Ten candidates for the 22 px icon in the Omarchy bar (the thing you click to open the panel). Each is shown at 96 px and inside a 30 px bar on three themes. Strokes are 0.9 px at 22 px, matching the other bar glyphs. All use <code>currentColor</code> so they follow the theme like the Canvas ripple does today.</p>
+<div class="grid" id="grid"></div>
+<script>
+const logos = [
+  ["01 · ripple (current)", "dot with concentric arcs, sound spreading from a tap",
+   `<circle class="f" cx="11" cy="11" r="1.6"/><circle cx="11" cy="11" r="4.6"/>
+    <path d="M4.7 8.7a6.8 6.8 0 0 1 2.2-3.2M17.3 8.7a6.8 6.8 0 0 0-2.2-3.2M6.1 15.6a6.8 6.8 0 0 0 9.8 0"/>
+    <path d="M2.4 8.2a8.8 8.8 0 0 1 2-3.6M19.6 8.2a8.8 8.8 0 0 0-2-3.6"/>`],
+  ["02 · keycap wave", "a single keycap with two sound arcs off its right edge",
+   `<rect x="3" y="6" width="10" height="10" rx="2"/><path d="M5.5 13h5"/>
+    <path d="M15.5 8.5a4 4 0 0 1 0 5M18 6.5a7.2 7.2 0 0 1 0 9"/>`],
+  ["03 · tap", "fingertip pressing a key, ripple above",
+   `<rect x="4" y="12" width="14" height="6" rx="1.5"/><path d="M11 12V7.5"/>
+    <path d="M7.8 5.2a4.5 4.5 0 0 1 6.4 0M5.6 3a7.5 7.5 0 0 1 10.8 0"/>`],
+  ["04 · switch stem", "MX switch cross stem inside a housing, seen from above",
+   `<rect x="3.5" y="3.5" width="15" height="15" rx="2.5"/><path d="M11 7.5v7M7.5 11h7"/>`],
+  ["05 · keys + wave", "three keycaps in a row, sound arc rising from the middle one",
+   `<rect x="2.5" y="12" width="5" height="5" rx="1"/><rect x="8.5" y="12" width="5" height="5" rx="1"/><rect x="14.5" y="12" width="5" height="5" rx="1"/>
+    <path d="M8.2 8.5a4 4 0 0 1 5.6 0M6 5.8a7.2 7.2 0 0 1 10 0"/>`],
+  ["06 · waveform", "a click transient: sharp attack, quick decay",
+   `<path d="M2.5 11h2l1.5-4 2 9 2-13 2 11 1.5-6 1.5 3h4.5"/>`],
+  ["07 · keycap A", "a keycap with the letter A, the test key",
+   `<rect x="3.5" y="3.5" width="15" height="15" rx="2.5"/><path d="M8 15l3-8 3 8M9.1 12.2h3.8"/>`],
+  ["08 · mouse + key", "keyboard and mouse together, since both click",
+   `<rect x="2.5" y="10" width="9" height="8" rx="1.5"/><path d="M4.5 14h5"/>
+    <rect x="13" y="4" width="6.5" height="11" rx="3.25"/><path d="M16.25 4v4"/>`],
+  ["09 · signal bars", "four bars of a click envelope, rounded like a keyboard silhouette",
+   `<path d="M4 15v-3M8 15V7M12 15V4.5M16 15V9"/><path d="M2.5 18h17"/>`],
+  ["10 · keycap ripple", "the current ripple, but sitting on a keycap",
+   `<rect x="2.5" y="4" width="17" height="14" rx="3"/><circle class="f" cx="11" cy="11" r="1.3"/>
+    <circle cx="11" cy="11" r="3.4"/><path d="M6.2 8.4a5.6 5.6 0 0 1 1.6-2.2M15.8 8.4a5.6 5.6 0 0 0-1.6-2.2"/>`],
+];
+const svg = body => `<svg viewBox="0 0 22 22" aria-hidden="true">${body}</svg>`;
+document.getElementById("grid").innerHTML = logos.map(([name, note, body]) => `
+  <div class="card">
+    <h2>${name}</h2>
+    <div class="big">${svg(body)}</div>
+    <div class="bar">
+      <div class="dark">${svg(body)} <span>18:00</span></div>
+      <div class="light">${svg(body)} <span>18:00</span></div>
+      <div class="tinted">${svg(body)} <span>18:00</span></div>
+    </div>
+    <small>${note}</small>
+  </div>`).join("");
+</script>

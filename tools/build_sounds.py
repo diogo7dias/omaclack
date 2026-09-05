@@ -26,10 +26,13 @@ TYPETONE = "https://github.com/phuclh/omarchy-typetone"
 # Mouse packs: (folder in typetone/mouse-sounds, our id, display name, recording credit)
 # Typetone (MIT) trims and filters CC0 Freesound recordings; see its
 # third_party/mouse-sounds/README.md for the exact sources.
+# The last field is how much of the render to keep: each recording has the
+# button press and its release ~100 ms later, then a second click that would
+# make one physical click sound like two.
 MOUSE_PACKS = [
-    ("logitech", "logitech", "Logitech", "OwlStorm, Freesound 320146 (CC0) via Typetone"),
-    ("razer", "razer", "Razer", "Katsuhira, Freesound 555394 (CC0) via Typetone"),
-    ("crisp", "crisp", "Crisp", "Six Ways, Freesound 223445 (CC0) via Typetone"),
+    ("logitech", "logitech", "Logitech", "OwlStorm, Freesound 320146 (CC0) via Typetone", 0.150),
+    ("razer", "razer", "Razer", "Katsuhira, Freesound 555394 (CC0) via Typetone", 0.160),
+    ("crisp", "crisp", "Crisp", "Six Ways, Freesound 223445 (CC0) via Typetone", 0.135),
 ]
 MOUSE_KEYS = {"272": "left.opus", "273": "right.opus", "274": "middle.opus",
               "275": "middle.opus", "276": "middle.opus"}
@@ -194,7 +197,7 @@ def build_kbsim(root):
 
 
 def build_mouse(root):
-    for folder, pid, name, credit in MOUSE_PACKS:
+    for folder, pid, name, credit, keep in MOUSE_PACKS:
         src_dir = os.path.join(root, "mouse-sounds", folder)
         out = os.path.join(OUT, "mouse", pid)
         os.makedirs(out, exist_ok=True)
@@ -203,7 +206,7 @@ def build_mouse(root):
         gain = min(peak_gain(os.path.join(src_dir, b + ".wav")) for b in ("left", "right", "middle"))
         for b in ("left", "right", "middle"):
             encode(os.path.join(src_dir, b + ".wav"), os.path.join(out, b + ".opus"),
-                   dur=0.35, gain_db=gain)
+                   start=0.0, dur=keep, gain_db=gain)
         os.link(os.path.join(out, "left.opus"), os.path.join(out, "default.opus"))
         write_pack("mouse/" + pid, {
             "name": name,
