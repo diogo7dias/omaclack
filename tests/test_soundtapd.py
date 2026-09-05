@@ -241,6 +241,31 @@ class SocketRoundTripTest(unittest.TestCase):
         finally:
             a.kill()
 
+    def test_pipe_channel_speaks_same_protocol(self):
+        tmp = tempfile.mkdtemp()
+        sock = os.path.join(tmp, "ctl.sock")
+        p = subprocess.Popen([sys.executable, DAEMON, "--socket=" + sock], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            hello = json.loads(p.stdout.readline())
+            self.assertEqual(hello["evt"], "hello")
+            self.assertIn("denied", hello)
+
+            def rpc(obj):
+                p.stdin.write((json.dumps(obj) + "\n").encode())
+                p.stdin.flush()
+                return json.loads(p.stdout.readline())
+
+            self.assertEqual(rpc({"cmd": "ping", "t": 7, "id": 3}), {"ok": True, "pong": 7, "id": 3})
+            self.assertTrue(rpc({"cmd": "mute", "toggle": True})["muted"])
+            self.assertTrue(rpc({"cmd": "status"})["muted"])
+            self.assertTrue(rpc({"cmd": "quit"})["quit"])
+            self.assertEqual(p.wait(timeout=3), 0)
+            self.assertEqual(p.stderr.read().decode(), "")
+        finally:
+            if p.poll() is None:
+                p.kill()
+
     def test_daemon_exits_when_parent_stdin_closes(self):
         tmp = tempfile.mkdtemp()
         sock = os.path.join(tmp, "ctl.sock")

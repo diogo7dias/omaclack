@@ -284,15 +284,15 @@ Panel {
           height: Style.space(28)
           spacing: Math.max(1, Math.floor((width - 50 * barW) / 49))
           readonly property int barW: Math.max(1, Math.floor(width / 50) - 1)
-          readonly property var data: root.service ? root.service.latencies : []
+          readonly property var values: root.service ? root.service.latencies : []
           readonly property real ceiling: 30
 
           Repeater {
             model: 50
             Rectangle {
               required property int index
-              readonly property int di: index - (50 - chart.data.length)
-              readonly property real ms: di >= 0 ? chart.data[di] : -1
+              readonly property int di: index - (50 - chart.values.length)
+              readonly property real ms: di >= 0 ? chart.values[di] : -1
               width: chart.barW
               y: chart.height - height
               height: ms < 0 ? 1 : Math.max(2, Math.round(chart.height * Math.min(1, ms / chart.ceiling)))

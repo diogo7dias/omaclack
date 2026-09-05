@@ -417,6 +417,46 @@ class CtlServer:
             pass
 
 
+class PipeChannel:
+    """JSON-lines over the stdin/stdout pipe pair the shell spawned us with."""
+
+    def __init__(self):
+        self.rbuf = b""
+        self.eof = False
+        self.out = os.fdopen(os.dup(1), "wb", buffering=0)
+        # Our stdout is now the shell's event feed; nothing else may print there.
+        sys.stdout = sys.stderr
+
+    def read_messages(self):
+        try:
+            data = os.read(0, 65536)
+        except BlockingIOError:
+            return []
+        except OSError:
+            data = b""
+        if not data:
+            self.eof = True
+            return []
+        self.rbuf += data
+        out = []
+        while b"\n" in self.rbuf:
+            line, self.rbuf = self.rbuf.split(b"\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                out.append({"cmd": "__bad__"})
+        return out
+
+    def send(self, obj):
+        try:
+            self.out.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
+        except OSError:
+            self.eof = True
+
+
 # ---------------------------------------------------------------- main loop
 
 def main(argv):
@@ -442,14 +482,25 @@ def main(argv):
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
 
-    # Die with parent (omarchy-shell).
+    # When stdin is a pipe (spawned by omarchy-shell) it doubles as the control
+    # channel: JSON lines in on stdin, replies and key events out on stdout.
+    # EOF on stdin means the shell is gone, so we exit with it.
     parent_fd = None
+    pipe = None
     try:
         import stat as _stat
         if _stat.S_ISFIFO(os.fstat(0).st_mode):
             parent_fd = 0
+            pipe = PipeChannel()
+            pipe.send({"evt": "hello", **ctl.status(), "denied": inputs.denied})
     except OSError:
         pass
+
+    def emit(obj):
+        if server.client:
+            server.send(obj)
+        if pipe is not None:
+            pipe.send(obj)
 
     while running:
         now = time.monotonic()
@@ -482,17 +533,21 @@ def main(argv):
                     if resp.get("quit"):
                         running = False
             elif fd == parent_fd:
-                try:
-                    if not os.read(parent_fd, 1):
-                        running = False
-                except OSError:
+                msgs = pipe.read_messages()
+                if pipe.eof:
                     running = False
+                for msg in msgs:
+                    resp = ctl.handle(msg)
+                    resp["id"] = msg.get("id")
+                    pipe.send(resp)
+                    if resp.get("quit"):
+                        running = False
             else:
                 for code in inputs.read_presses(fd):
                     for c in keys.on_press(code, now_ms):
                         lat = ctl.play(c, now)
-                        if lat is not None and server.client:
-                            server.send({"evt": "key", "key": c, "latency_ms": lat})
+                        if lat is not None:
+                            emit({"evt": "key", "key": c, "latency_ms": lat})
 
     server.close()
     return 0

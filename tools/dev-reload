@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Make the running omarchy-shell reload this plugin when the plugin directory is
+# a symlink to a checkout. inotifywait -r does not follow symlinks, so edits
+# inside the checkout are invisible to the shell; recreating the link is a
+# delete+create event on the watched directory, which triggers a full reload.
+set -euo pipefail
+here=$(cd "$(dirname "$0")/.." && pwd -P)
+id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$here/manifest.json")
+link="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$id"
+if [[ -L $link ]]; then
+  ln -sfn "$here" "$link"
+  echo "reloaded $id via $link"
+else
+  echo "$link is not a symlink; the shell watches it directly, just save a file." >&2
+  exit 1
+fi

@@ -39,15 +39,17 @@ No sudo at runtime, no systemd units, no extra packages.
 
 ```
 omarchy-shell
- └─ Service.qml            reactive state, settings file, socket client
-     └─ bin/soundtapd      Python: evdev reader + key filter + JSON socket server
+ └─ Service.qml            reactive state, settings file, JSON over the daemon's pipe
+     └─ bin/soundtapd      Python: evdev reader + key filter + JSON stdin/stdout + ctl socket
          └─ pw-play        one short-lived process per keypress, WAV on stdin
 ```
 
-- **Service.qml** spawns the daemon with `Quickshell.Io.Process` (stdin pipe as
-  lifeline: shell exits, daemon exits) and talks JSON lines over
-  `$XDG_RUNTIME_DIR/soundtap/ctl.sock`. State persists to
-  `~/.config/omarchy/soundtap.json`.
+- **Service.qml** spawns the daemon with `Quickshell.Io.Process` and talks JSON
+  lines over that process's own stdin/stdout. The pipe is also the lifeline:
+  shell exits, pipe closes, daemon exits. Nothing to connect or reconnect.
+  State persists to `~/.config/omarchy/soundtap.json`.
+  The daemon additionally binds `$XDG_RUNTIME_DIR/soundtap/ctl.sock` with the
+  same protocol for the CLI, tests and the benchmark.
 - **soundtapd** opens every `/dev/input/event*` it can, `select()`s on them,
   keeps only key-down events for keyboard codes (`< 0x100`) and mouse buttons
   (`BTN_LEFT..BTN_TASK`). Same key within 30 ms is dropped. Modifiers stay
@@ -65,7 +67,8 @@ omarchy-shell
 
 ## IPC protocol
 
-Newline-delimited JSON, single client, `flock()` on `ctl.sock.lock`.
+Newline-delimited JSON, same shape on the shell's stdin/stdout pipe and on the
+socket (one socket client at a time), `flock()` on `ctl.sock.lock`.
 
 ```json
 {"cmd": "play", "key": 30}            → {"ok": true, "latency_ms": 0.4}
@@ -115,9 +118,13 @@ python3 -m unittest discover -s tests     # daemon, mixer, filter, protocol, pac
 python3 tools/gen_sounds.py [pack ...]    # regenerate placeholder packs
 ```
 
-Saving any file under `~/.config/omarchy/plugins/` hot-reloads the widget.
-The service is `keepLoaded`, so changes to `Service.qml` or the daemon need
-`omarchy-restart-shell`.
+Saving any file under `~/.config/omarchy/plugins/<id>/` hot-reloads the whole
+plugin, service and daemon included. Two gotchas when the plugin directory is a
+**symlink** to your checkout: the shell's `inotifywait -r` does not follow
+symlinks, so edits go unnoticed until you run `tools/dev-reload` (recreates the
+symlink, which the watcher does see); and a QML file that fails to compile can
+stay cached in the running shell after you fix it, so if the panel still will
+not open after a reload, `omarchy restart shell`.
 
 ## Privacy
 

@@ -114,20 +114,29 @@ Item {
   }
 
   // ---- daemon process ----
+  // The daemon's stdin/stdout pipe pair is the control channel: JSON lines in,
+  // replies and key events out. No socket to poll or reconnect; the pipe
+  // exists exactly as long as the process does, and closing it (shell exit)
+  // is what tells the daemon to quit. bin/soundtapd still binds
+  // $XDG_RUNTIME_DIR/soundtap/ctl.sock for CLI/tests.
   Process {
     id: daemon
     command: ["python3", root.pluginDir + "bin/soundtapd", "--socket=" + root.socketPath]
-    // stdin is the lifeline: the daemon exits when this pipe closes with the shell.
     stdinEnabled: true
     running: true
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.handleLine(line) }
+    }
     onStarted: root.daemonRunning = true
     onExited: function(code, status) {
       root.daemonRunning = false
       root.connected = false
-      ctl.connected = false
-      // Exit 2 means another soundtapd already holds the socket: connect to it instead of looping.
-      if (code !== 2) restartTimer.restart()
-      else connectTimer.restart()
+      // Exit 2: another soundtapd still holds the socket lock (a previous
+      // shell's daemon that has not noticed its pipe closing yet). Either way,
+      // try again shortly.
+      restartTimer.interval = code === 2 ? 1500 : 2000
+      restartTimer.restart()
     }
   }
 
@@ -137,42 +146,14 @@ Item {
     onTriggered: daemon.running = true
   }
 
-  // ---- control socket ----
-  Socket {
-    id: ctl
-    path: root.socketPath
-    parser: SplitParser {
-      splitMarker: "\n"
-      onRead: function(line) { root.handleLine(line) }
-    }
-    onConnectedChanged: {
-      root.connected = connected
-      if (connected) root.pushState()
-      else connectTimer.restart()
-    }
-  }
-
-  // Poll until the daemon has bound its socket, then keep trying on drops.
-  Timer {
-    id: connectTimer
-    interval: 400
-    repeat: true
-    running: true
-    onTriggered: {
-      if (ctl.connected) { running = false; return }
-      ctl.connected = false
-      ctl.connected = true
-    }
-  }
-
   function send(obj) {
-    if (!ctl.connected) return
-    try { ctl.write(JSON.stringify(obj) + "\n"); ctl.flush() } catch (e) { }
+    if (!daemon.running) return
+    try { daemon.write(JSON.stringify(obj) + "\n") } catch (e) { }
   }
 
   // Full resync after (re)connect or config load. The daemon keeps no config of its own.
   function pushState() {
-    if (!ctl.connected || !configLoaded) return
+    if (!connected || !configLoaded) return
     send({ cmd: "load", pack: currentPack })
     send({ cmd: "volume", value: volume })
     send({ cmd: "mouse", value: mouseEnabled })
@@ -196,6 +177,8 @@ Item {
     if (msg.evt === "hello") {
       inputDenied = msg.denied === true
       streamOk = msg.stream === true
+      connected = true
+      pushState()
     }
     if (typeof msg.stream === "boolean") streamOk = msg.stream
     if (msg.ok === false && msg.error && String(msg.error).indexOf("sounds/") >= 0 && packs.length) {
