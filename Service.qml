@@ -75,15 +75,23 @@ Item {
   readonly property bool suppressed: activeApp !== "" && denylist.indexOf(activeApp) >= 0
 
   // Microphone in use: any PipeWire capture stream (an app recording), e.g. a call.
-  PwObjectTracker { objects: Pipewire.nodes.values }
+  // Track only capture streams, not every node in the graph.
+  readonly property var captureNodes: {
+    var n = Pipewire.nodes.values, out = []
+    for (var i = 0; i < n.length; i++) {
+      if (n[i] && n[i].isStream && n[i].isSink === false) out.push(n[i])
+    }
+    return out
+  }
+  PwObjectTracker { objects: root.captureNodes }
   property bool micInUse: false
   function scanMic() {
-    var nodes = Pipewire.nodes.values
+    var nodes = root.captureNodes
     var found = false
     for (var i = 0; i < nodes.length && !found; i++) {
       var n = nodes[i]
       // Stream/Input/Audio = an app capturing (Quickshell: a stream that is not a sink).
-      if (n && n.isStream && !n.isSink && n.audio && String(n.name || "").indexOf("omaclack") < 0) found = true
+      if (n && n.audio && String(n.name || "").indexOf("omaclack") < 0) found = true
     }
     micInUse = found
   }
@@ -108,7 +116,7 @@ Item {
     var d = new Date(), now = d.getHours() * 60 + d.getMinutes()
     return a < b ? (now >= a && now < b) : (now >= a || now < b)
   }
-  Timer { interval: 30000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.inQuietHours = root.computeQuiet() }
+  Timer { interval: 30000; running: root.quietHours; repeat: true; triggeredOnStart: true; onTriggered: root.inQuietHours = root.computeQuiet() }
   onQuietHoursChanged: inQuietHours = computeQuiet()
   onQuietFromChanged: inQuietHours = computeQuiet()
   onQuietToChanged: inQuietHours = computeQuiet()
@@ -176,7 +184,12 @@ Item {
   function preview(key) { send({ cmd: "play", key: key === undefined ? 30 : key }) }
   function ping() { send({ cmd: "ping", t: Date.now() }) }
   function requestStats() { send({ cmd: "stats" }) }
-  function refreshPacks() { send({ cmd: "status" }) }
+  function refreshPacks() {
+    send({ cmd: "status" })
+    // Force the daemon to drop cached samples so a replaced pack on disk is heard.
+    if (currentPack) send({ cmd: "load", pack: currentPack })
+    if (mousePack) send({ cmd: "mousepack", pack: mousePack })
+  }
 
   // Hardware hint: suggest a pack for the keyboard that is actually typing.
   readonly property string mainDevice: devices.length ? devices[0] : ""
@@ -232,8 +245,12 @@ Item {
     pushState()
   }
 
-  function save() {
+  // Debounce disk writes: sliders fire setVolume on every tick.
+  Timer { id: saveDebounce; interval: 250; onTriggered: root.flushSave() }
+  function save() { if (!configLoaded) return; saveDebounce.restart() }
+  function flushSave() {
     if (!configLoaded) return
+    saveDebounce.stop()
     configFile.setText(JSON.stringify({
       version: 2, enabled: enabled, volume: volume, pack: currentPack, mouse: mouseEnabled,
       mousePack: mousePack, mouseVolume: mouseVolume, velocity: velocity, release: releaseSounds,
@@ -306,13 +323,13 @@ Item {
       return
     }
     if (msg.pong !== undefined && msg.pong !== null) pushLatency(Date.now() - Number(msg.pong))
+    if (typeof msg.denied === "boolean") inputDenied = msg.denied
+    if (Array.isArray(msg.devices)) devices = msg.devices
     if (typeof msg.kpm === "number") { stats = msg; return }
     if (Array.isArray(msg.packs)) packs = msg.packs
     if (Array.isArray(msg.mouse_packs)) mousePacks = msg.mouse_packs
     if (Array.isArray(msg.rooms)) rooms = msg.rooms
-    if (Array.isArray(msg.devices)) devices = msg.devices
     if (msg.evt === "hello") {
-      inputDenied = msg.denied === true
       streamOk = msg.stream === true
       connected = true
       pushState()
@@ -338,6 +355,7 @@ Item {
   }
 
   Component.onDestruction: {
+    if (saveDebounce.running) root.flushSave()
     send({ cmd: "quit" })
     daemon.running = false
   }
