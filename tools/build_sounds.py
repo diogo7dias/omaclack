@@ -335,26 +335,27 @@ def build_kbsim(root):
         out = os.path.join(OUT, pid)
         gain = min(peak_gain(os.path.join(press, "GENERIC_R%d.mp3" % r)) for r in range(5))
         rgain = peak_gain(os.path.join(rel, "GENERIC.mp3")) - 3.0
-        keys, upkeys = {}, {}
-        # Per-key files so each key still gets its own pan; the map only covers
-        # what pack.json readers need to know: everything else falls to default.
+        keys = {}
+        # One unpanned file per row; the mixer pans by key at playback (`pan: true`).
         for r, codes in ROWS.items():
+            encode(os.path.join(press, "GENERIC_R%d.mp3" % r), os.path.join(out, "row%d.opus" % r),
+                   0.0, 0.25, gain, None)
+            encode(os.path.join(rel, "GENERIC.mp3"), os.path.join(out, "up", "row%d.opus" % r),
+                   0.0, 0.2, rgain, None)
             for c in codes:
-                encode(os.path.join(press, "GENERIC_R%d.mp3" % r), os.path.join(out, "%d.opus" % c),
-                       0.0, 0.25, gain, key_pan(c))
-                encode(os.path.join(rel, "GENERIC.mp3"), os.path.join(out, "up", "%d.opus" % c),
-                       0.0, 0.2, rgain, key_pan(c))
+                if c not in SPECIAL:
+                    keys[str(c)] = "row%d.opus" % r
         for c, nm in SPECIAL.items():
             for sub, g in (("press", gain), ("release", rgain)):
                 src = os.path.join(base, sub, nm.upper() + ".mp3")
                 if os.path.exists(src):
                     dst = os.path.join(out, "up" if sub == "release" else "", "%d.opus" % c)
-                    encode(src, dst, 0.0, 0.25, g, key_pan(c))
-        link_default(out, "30.opus")
-        link_default(os.path.join(out, "up"), "30.opus")
+                    encode(src, dst, 0.0, 0.25, g, None)
+        link_default(out, "row3.opus")
+        link_default(os.path.join(out, "up"), "row3.opus")
         write_pack(pid, {"name": name, "credit": "kbsim by Thomas Lai", "source": KBSIM,
                          "origin": "src/assets/audio/" + folder, "license": "MIT",
-                         "release": "recorded", "stereo": True})
+                         "release": "recorded", "stereo": True, "pan": True, "keys": keys})
 
 
 MOUSE_KEYS = {"272": "left.opus", "273": "right.opus", "274": "middle.opus",
