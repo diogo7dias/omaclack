@@ -63,6 +63,24 @@ someone ships that, the `input` group is the real door.
 
 No sudo at runtime, no systemd units, no extra packages.
 
+## Removal
+
+```bash
+omarchy plugin disable io.github.diogo7dias.omaclack
+omarchy plugin remove io.github.diogo7dias.omaclack
+```
+
+The daemon dies with the shell (stdin pipe closes). Nothing is left listening.
+
+User data outside the plugin directory is left alone:
+
+```
+~/.config/omarchy/omaclack.json
+~/.config/omarchy/omaclack/packs/
+```
+
+Delete those yourself if you want them gone. The `input` group is not removed.
+
 ## How it works
 
 ```
