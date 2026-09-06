@@ -2,8 +2,9 @@
 
 Mechanical keyboard and mouse click sounds for [Omarchy](https://omarchy.org)
 (Quattro shell). 25 keyboard packs and 10 mouse packs cut from real switch
-recordings, press and release for every key, panned by key position, one
-`pw-play` per event, no network, no logging. About 4 MB installed.
+recordings, press and release for every key, panned by key position. The
+default Rust daemon mixes into one PipeWire stream; other CPUs fall back to
+one `pw-play` per event. No network, no logging. About 4 MB installed.
 
 ```bash
 omarchy plugin add https://github.com/diogo7dias/omaclack.git --enable
@@ -227,20 +228,23 @@ not open after a reload, `omarchy restart shell`.
 sink and reports startup, footprint, idle CPU, command round trip and
 key-to-sound onset (command sent to first sample on the sink monitor,
 including the capture path, which is identical for every backend). On this
-laptop (Ryzen, PipeWire 1.6, quantum 1024):
+laptop (Ryzen, PipeWire 1.6.8), re-measured 2026-09-06:
 
 | build | startup | RSS | idle CPU / 10 s | cmd round trip p50 | onset p50 | onset p95 | onset after 4 s idle |
 |---|---|---|---|---|---|---|---|
-| Python, pw-play per key | 50 ms | 17.4 MB | 0 ms | 1.3 ms | 49 ms | 61 ms | 50 ms |
-| Rust, pw-play per key | 4 ms | 4.5 MB | 0 ms | 0.9 ms | 36 ms | 40 ms | 39 ms |
-| Rust, in-process stream | 50 ms | 18.0 MB | 0 ms | 0.4 ms | **18 ms** | **21 ms** | **19 ms** |
+| Python, pw-play per key | 20 ms | 17.4 MB | 0 ms | 1.0 ms | 39 ms | 42 ms | 39 ms |
+| Rust, pw-play per key | 2 ms | 4.5 MB | 0 ms | 0.7 ms | 39 ms | 41 ms | 38 ms |
+| Rust, in-process stream | 50 ms | 18.0 MB | 0 ms | 0.2 ms | **19 ms** | **22 ms** | — |
 
-The language change alone buys little: the daemon idles in poll either way.
-The win is architectural. Not spawning pw-play saves its process start and
-PipeWire connection on every key, cutting key-to-sound from ~49 ms to ~18 ms
-with the same jitter, and the first key after silence pays no penalty. The
-Rust in-process build spends its memory on pre-decoded samples for the two
-active packs; the Python daemon spends the same on the interpreter.
+Idle CPU is zero in all three. RSS matches the earlier table exactly. The
+language change alone does not cut key-to-sound: Python and Rust-spawn both
+land at 39 ms p50 here. The win is architectural. Not spawning pw-play saves
+its process start and PipeWire connection on every key, cutting key-to-sound
+from ~39 ms to ~19 ms. In-process cold onset (first key after 4 s idle) was
+not independently confirmed this run: the null-sink detector saw extra bursts
+once the stream reactivated, so that cell is left blank rather than guessed.
+The Rust in-process build spends its memory on pre-decoded samples for the
+two active packs; the Python daemon spends the same on the interpreter.
 
 Build: `cd daemon && cargo build --release && cp target/release/omaclackd
 ../bin/omaclackd-x86_64`. Needs libpipewire and libsndfile headers. The
