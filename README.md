@@ -1,4 +1,4 @@
-# SoundTap
+# Omaclack
 
 Mechanical keyboard typing sounds for [Omarchy](https://omarchy.org) (Quattro shell).
 Per-key sound packs cut from real switch recordings, one `pw-play` per
@@ -11,11 +11,11 @@ and a live latency chart. Right-click toggles, the wheel nudges keyboard volume.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/diogo7dias/soundtap.git --enable
+omarchy plugin add https://github.com/diogo7dias/omaclack.git --enable
 ```
 
-Manual: copy this directory to `~/.config/omarchy/plugins/io.github.ddm.soundtap/`,
-then `omarchy-shell shell rescanPlugins` and `omarchy plugin enable io.github.ddm.soundtap`.
+Manual: copy this directory to `~/.config/omarchy/plugins/io.github.diogo7dias.omaclack/`,
+then `omarchy-shell shell rescanPlugins` and `omarchy plugin enable io.github.diogo7dias.omaclack`.
 
 The widget lands in the bar's right section. Move it with `omarchy bar move`.
 
@@ -42,17 +42,17 @@ No sudo at runtime, no systemd units, no extra packages.
 ```
 omarchy-shell
  └─ Service.qml            reactive state, settings file, JSON over the daemon's pipe
-     └─ bin/soundtapd      Python: evdev reader + key filter + JSON stdin/stdout + ctl socket
+     └─ bin/omaclackd      Python: evdev reader + key filter + JSON stdin/stdout + ctl socket
          └─ pw-play        one short-lived process per keypress: `pw-play --volume g <key>.opus`
 ```
 
 - **Service.qml** spawns the daemon with `Quickshell.Io.Process` and talks JSON
   lines over that process's own stdin/stdout. The pipe is also the lifeline:
   shell exits, pipe closes, daemon exits. Nothing to connect or reconnect.
-  State persists to `~/.config/omarchy/soundtap.json`.
-  The daemon additionally binds `$XDG_RUNTIME_DIR/soundtap/ctl.sock` with the
+  State persists to `~/.config/omarchy/omaclack.json`.
+  The daemon additionally binds `$XDG_RUNTIME_DIR/omaclack/ctl.sock` with the
   same protocol for the CLI, tests and the benchmark.
-- **soundtapd** opens every `/dev/input/event*` it can, `select()`s on them,
+- **omaclackd** opens every `/dev/input/event*` it can, `select()`s on them,
   keeps only key-down events for keyboard codes (`< 0x100`) and mouse buttons
   (`BTN_LEFT..BTN_TASK`). Same key within 30 ms is dropped; every other press
   sounds, modifiers included. Mouse buttons play from a separate mouse pack.
@@ -92,7 +92,7 @@ Latency is measured from the evdev read to the pw-play spawn.
 Try it by hand:
 
 ```bash
-python3 bin/soundtapd --socket=/tmp/st.sock &
+python3 bin/omaclackd --socket=/tmp/st.sock &
 printf '{"cmd":"play","key":57}\n{"cmd":"quit"}\n' | nc -U /tmp/st.sock
 ```
 

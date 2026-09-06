@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""soundtapd: keyboard sound daemon for the SoundTap Omarchy plugin.
+"""omaclackd: keyboard sound daemon for the Omaclack Omarchy plugin.
 
 Reads /dev/input/event* directly and spawns one short-lived `pw-play` per
 keypress on a per-key Opus file. pw-play auto-connects to PipeWire, decodes
@@ -41,7 +41,7 @@ MOUSE_DIR = os.path.join(SOUNDS_DIR, "mouse")
 
 def runtime_dir():
     base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    return os.path.join(base, "soundtap")
+    return os.path.join(base, "omaclack")
 
 
 # ---------------------------------------------------------------- packs

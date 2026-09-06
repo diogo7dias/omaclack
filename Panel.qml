@@ -3,12 +3,12 @@ import Quickshell
 import qs.Commons
 import qs.Ui
 
-// SoundTap popup: on/off, volume, pack chips, mouse clicks, ignored apps,
+// Omaclack popup: on/off, volume, pack chips, mouse clicks, ignored apps,
 // latency bars. Hosted by BarWidget.qml through a Loader; the bar identifies
 // the popout by hostWidget (see weather panel for the same shape).
 Panel {
   id: root
-  moduleName: "io.github.ddm.soundtap"
+  moduleName: "io.github.diogo7dias.omaclack"
   ipcTarget: ""
   manageIpc: false
 
@@ -73,7 +73,7 @@ Panel {
           spacing: Style.space(2)
           Text {
             textFormat: Text.PlainText
-            text: "SOUNDTAP"
+            text: "OMACLACK"
             color: root.fg
             font.family: root.mono
             font.pixelSize: Style.font.subtitle

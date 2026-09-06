@@ -6,10 +6,10 @@ import qs.Ui
 // toggles sound on/off, wheel nudges volume.
 BarWidget {
   id: root
-  moduleName: "io.github.ddm.soundtap"
+  moduleName: "io.github.diogo7dias.omaclack"
 
   readonly property var service: bar && bar.shell && typeof bar.shell.serviceFor === "function"
-    ? bar.shell.serviceFor("io.github.ddm.soundtap") : null
+    ? bar.shell.serviceFor("io.github.diogo7dias.omaclack") : null
   readonly property bool soundOn: service ? (service.enabled && !service.suppressed) : false
 
   // Shape contract the bar uses to route shell summon/hide/toggle to us.
@@ -50,8 +50,8 @@ BarWidget {
     bar: root.bar
     active: root.opened
     tooltipText: root.service
-      ? (root.soundOn ? "SoundTap · " + root.service.currentPack + " · " + root.service.volume + "%" : "SoundTap · off")
-      : "SoundTap · starting"
+      ? (root.soundOn ? "Omaclack · " + root.service.currentPack + " · " + root.service.volume + "%" : "Omaclack · off")
+      : "Omaclack · starting"
     iconComponent: ripple
 
     onPressed: function(b) {

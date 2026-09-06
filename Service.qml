@@ -3,7 +3,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 
-// SoundTap service: owns the soundtapd helper, the control socket, and the
+// Omaclack service: owns the omaclackd helper, the control socket, and the
 // user's settings. Lives for the shell's lifetime (manifest keepLoaded: true).
 // The bar widget and panel only read these properties and call the set* functions.
 Item {
@@ -13,12 +13,12 @@ Item {
   property var shell: null
   property var manifest: null
 
-  readonly property string pluginId: "io.github.ddm.soundtap"
+  readonly property string pluginId: "io.github.diogo7dias.omaclack"
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "")
   readonly property string home: Quickshell.env("HOME")
-  readonly property string runtimeDir: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/soundtap"
+  readonly property string runtimeDir: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omaclack"
   readonly property string socketPath: runtimeDir + "/ctl.sock"
-  readonly property string configPath: home + "/.config/omarchy/soundtap.json"
+  readonly property string configPath: home + "/.config/omarchy/omaclack.json"
 
   // ---- user state (persisted) ----
   property bool enabled: true
@@ -140,11 +140,11 @@ Item {
   // The daemon's stdin/stdout pipe pair is the control channel: JSON lines in,
   // replies and key events out. No socket to poll or reconnect; the pipe
   // exists exactly as long as the process does, and closing it (shell exit)
-  // is what tells the daemon to quit. bin/soundtapd still binds
-  // $XDG_RUNTIME_DIR/soundtap/ctl.sock for CLI/tests.
+  // is what tells the daemon to quit. bin/omaclackd still binds
+  // $XDG_RUNTIME_DIR/omaclack/ctl.sock for CLI/tests.
   Process {
     id: daemon
-    command: ["python3", root.pluginDir + "bin/soundtapd", "--socket=" + root.socketPath]
+    command: ["python3", root.pluginDir + "bin/omaclackd", "--socket=" + root.socketPath]
     stdinEnabled: true
     running: true
     stdout: SplitParser {
@@ -155,7 +155,7 @@ Item {
     onExited: function(code, status) {
       root.daemonRunning = false
       root.connected = false
-      // Exit 2: another soundtapd still holds the socket lock (a previous
+      // Exit 2: another omaclackd still holds the socket lock (a previous
       // shell's daemon that has not noticed its pipe closing yet). Either way,
       // try again shortly.
       restartTimer.interval = code === 2 ? 1500 : 2000

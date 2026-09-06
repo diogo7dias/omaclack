@@ -10,13 +10,13 @@ import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DAEMON = os.path.join(ROOT, "bin", "soundtapd")
+DAEMON = os.path.join(ROOT, "bin", "omaclackd")
 SOUNDS = os.path.join(ROOT, "sounds")
 
 
 def load_daemon():
-    loader = importlib.machinery.SourceFileLoader("soundtapd", DAEMON)
-    spec = importlib.util.spec_from_loader("soundtapd", loader)
+    loader = importlib.machinery.SourceFileLoader("omaclackd", DAEMON)
+    spec = importlib.util.spec_from_loader("omaclackd", loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod

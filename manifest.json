@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.ddm.soundtap",
-  "name": "SoundTap",
+  "id": "io.github.diogo7dias.omaclack",
+  "name": "Omaclack",
   "version": "1.0.0",
   "author": "Diogo M.",
   "license": "MIT",
@@ -13,7 +13,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "SoundTap",
+    "displayName": "Omaclack",
     "description": "Keyboard sound toggle, pack picker, volume",
     "category": "Utilities",
     "allowMultiple": false,
