@@ -249,7 +249,7 @@ Item {
   // also binds $XDG_RUNTIME_DIR/omaclack/ctl.sock for the CLI, tests and hooks.
   Process {
     id: daemon
-    command: ["python3", root.pluginDir + "bin/omaclackd", "--socket=" + root.socketPath]
+    command: [root.pluginDir + "bin/omaclackd", "--socket=" + root.socketPath]
     stdinEnabled: true
     running: true
     stdout: SplitParser {

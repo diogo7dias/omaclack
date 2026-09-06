@@ -47,8 +47,9 @@ Until then the panel shows `no /dev/input access` and nothing plays.
 ### Requirements
 
 - Omarchy Quattro (`omarchy-shell`).
-- PipeWire with `pw-play` and a libsndfile that decodes Opus (standard on Omarchy).
-- Python 3.10+ (stdlib only).
+- PipeWire and a libsndfile that decodes Opus (standard on Omarchy).
+- x86_64 for the Rust daemon; anything else runs the Python 3.10+ fallback
+  (stdlib only, needs `pw-play`).
 
 No sudo at runtime, no systemd units, no extra packages.
 
@@ -56,9 +57,11 @@ No sudo at runtime, no systemd units, no extra packages.
 
 ```
 omarchy-shell
- └─ Service.qml            reactive state, settings file, JSON over the daemon's pipe
-     └─ bin/omaclackd      Python: evdev reader + key filter + JSON stdin/stdout + ctl socket
-         └─ pw-play        one short-lived process per keypress: `pw-play --volume g <key>.opus`
+ └─ Service.qml               reactive state, settings file, JSON over the daemon's pipe
+     └─ bin/omaclackd         launcher: Rust build for this CPU, else the Python daemon
+         ├─ omaclackd-x86_64  Rust: evdev + JSON protocol + one persistent PipeWire stream
+         │                    (samples pre-decoded with libsndfile, mixed in the RT callback)
+         └─ omaclackd.py      Python fallback: same protocol, one `pw-play` per event
 ```
 
 - **Service.qml** spawns the daemon with `Quickshell.Io.Process` and talks JSON
@@ -73,12 +76,15 @@ omarchy-shell
   sounds, modifiers included, and so does the release (`up/<code>.opus`, 30%
   quieter). Mouse buttons play from a separate mouse pack. Velocity scales a
   key from 80% (unhurried) to 100% (the previous key was under 100 ms ago).
-- **Playback**: each keypress spawns `pw-play --volume <gain> sounds/<pack>/<code>.opus`
-  (capped at 16 in flight, children reaped without threads). No audio bytes pass
-  through Python: pw-play decodes the Opus file with libsndfile and exits when
-  it ends. Measured against a persistent paced stream, the one-shot approach
-  had identical onset latency (within 2 ms), so it stays: nothing resident, no
-  stream state, and the daemon idles in `select()` between keys.
+- **Playback (Rust, default)**: every sample of the current keyboard and
+  mouse pack is decoded once with libsndfile (the decoder pw-play uses) into
+  48 kHz stereo float. One PipeWire stream owned by the daemon mixes the live
+  voices in its realtime callback, filling exactly the frames each cycle asks
+  for. The stream is created inactive and only activated while something
+  plays; 2.5 s after the last key it deactivates so the sink can suspend.
+  Room presets reconnect the stream to the room sink.
+- **Playback (Python fallback)**: `pw-play --volume <gain> <key>.opus` per
+  event, capped at 24 in flight. No audio passes through Python.
 - **Rooms**: a preset spawns `pipewire -c <generated conf>` with a
   filter-chain sink (low shelf, lowpass, convolver on a synthesised impulse
   response written to `$XDG_RUNTIME_DIR/omaclack`), and pw-play targets it.
@@ -198,7 +204,9 @@ Both licenses are reproduced in `sounds/LICENSES.md`.
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests            # daemon, player, filter, protocol, pack checks
+python3 -m unittest discover -s tests            # Python daemon internals + protocol, pack checks
+OMACLACKD_BIN=bin/omaclackd-x86_64 python3 -m unittest discover -s tests   # protocol tests against the Rust build
+tools/bench_daemon.py rust bin/omaclackd-x86_64  # startup, footprint, key-to-sound onset
 tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>   # re-import all packs (ffmpeg)
 tools/omaclack-import <folder-or-zip> [--mouse]  # add a pack to ~/.config/omarchy/omaclack/packs
 tools/omaclack-theme-hook <slug>                 # what the Omarchy theme-set hook runs
@@ -212,6 +220,31 @@ symlinks, so edits go unnoticed until you run `tools/dev-reload` (recreates the
 symlink, which the watcher does see); and a QML file that fails to compile can
 stay cached in the running shell after you fix it, so if the panel still will
 not open after a reload, `omarchy restart shell`.
+
+## Why Rust, measured
+
+`tools/bench_daemon.py <label> <command>` runs a build against a private null
+sink and reports startup, footprint, idle CPU, command round trip and
+key-to-sound onset (command sent to first sample on the sink monitor,
+including the capture path, which is identical for every backend). On this
+laptop (Ryzen, PipeWire 1.6, quantum 1024):
+
+| build | startup | RSS | idle CPU / 10 s | cmd round trip p50 | onset p50 | onset p95 | onset after 4 s idle |
+|---|---|---|---|---|---|---|---|
+| Python, pw-play per key | 50 ms | 17.4 MB | 0 ms | 1.3 ms | 49 ms | 61 ms | 50 ms |
+| Rust, pw-play per key | 4 ms | 4.5 MB | 0 ms | 0.9 ms | 36 ms | 40 ms | 39 ms |
+| Rust, in-process stream | 50 ms | 18.0 MB | 0 ms | 0.4 ms | **18 ms** | **21 ms** | **19 ms** |
+
+The language change alone buys little: the daemon idles in poll either way.
+The win is architectural. Not spawning pw-play saves its process start and
+PipeWire connection on every key, cutting key-to-sound from ~49 ms to ~18 ms
+with the same jitter, and the first key after silence pays no penalty. The
+Rust in-process build spends its memory on pre-decoded samples for the two
+active packs; the Python daemon spends the same on the interpreter.
+
+Build: `cd daemon && cargo build --release && cp target/release/omaclackd
+../bin/omaclackd-x86_64`. Needs libpipewire and libsndfile headers. The
+committed binary is for x86_64; other CPUs fall back to Python automatically.
 
 ## Theme hook
 

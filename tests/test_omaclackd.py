@@ -10,8 +10,13 @@ import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DAEMON = os.path.join(ROOT, "bin", "omaclackd")
+DAEMON = os.path.join(ROOT, "bin", "omaclackd.py")
+if not os.path.exists(DAEMON):
+    DAEMON = os.path.join(ROOT, "bin", "omaclackd")
 SOUNDS = os.path.join(ROOT, "sounds")
+# Process-level tests run against this command; default is the Python daemon,
+# OMACLACKD_BIN=bin/omaclackd-x86_64 runs them against the Rust build instead.
+DAEMON_CMD = [os.environ["OMACLACKD_BIN"]] if os.environ.get("OMACLACKD_BIN") else [sys.executable, DAEMON]
 
 
 def load_daemon():
@@ -266,7 +271,7 @@ class SocketRoundTripTest(unittest.TestCase):
     def test_daemon_answers_over_socket(self):
         tmp = tempfile.mkdtemp()
         sock = os.path.join(tmp, "ctl.sock")
-        proc = subprocess.Popen([sys.executable, DAEMON, "--socket=" + sock],
+        proc = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock],
                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:
             for _ in range(50):
@@ -302,14 +307,14 @@ class SocketRoundTripTest(unittest.TestCase):
     def test_second_daemon_refused_by_lock(self):
         tmp = tempfile.mkdtemp()
         sock = os.path.join(tmp, "ctl.sock")
-        a = subprocess.Popen([sys.executable, DAEMON, "--socket=" + sock], stdin=subprocess.PIPE,
+        a = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock], stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             for _ in range(50):
                 if os.path.exists(sock):
                     break
                 time.sleep(0.05)
-            b = subprocess.run([sys.executable, DAEMON, "--socket=" + sock], timeout=5)
+            b = subprocess.run(DAEMON_CMD + ["--socket=" + sock], timeout=5)
             self.assertEqual(b.returncode, 2)
         finally:
             a.kill()
@@ -317,7 +322,7 @@ class SocketRoundTripTest(unittest.TestCase):
     def test_pipe_channel_speaks_same_protocol(self):
         tmp = tempfile.mkdtemp()
         sock = os.path.join(tmp, "ctl.sock")
-        p = subprocess.Popen([sys.executable, DAEMON, "--socket=" + sock], stdin=subprocess.PIPE,
+        p = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             hello = json.loads(p.stdout.readline())
@@ -342,7 +347,7 @@ class SocketRoundTripTest(unittest.TestCase):
     def test_daemon_exits_when_parent_stdin_closes(self):
         tmp = tempfile.mkdtemp()
         sock = os.path.join(tmp, "ctl.sock")
-        p = subprocess.Popen([sys.executable, DAEMON, "--socket=" + sock], stdin=subprocess.PIPE,
+        p = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock], stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(50):
             if os.path.exists(sock):
