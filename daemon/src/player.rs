@@ -133,6 +133,7 @@ pub struct InProcessPlayer {
     target: Option<String>,
     cache: HashMap<PathBuf, Arc<Vec<f32>>>,
     mix: Arc<Mutex<Mix>>,
+    stream_on: Arc<std::sync::atomic::AtomicBool>,
     tx: pipewire::channel::Sender<Msg>,
     thread: Option<std::thread::JoinHandle<()>>,
     ok: Arc<std::sync::atomic::AtomicBool>,
@@ -142,19 +143,21 @@ impl InProcessPlayer {
     pub fn new() -> Result<Self, String> {
         let mix = Arc::new(Mutex::new(Mix { voices: Vec::new(), last_activity: Instant::now(), active: false }));
         let ok = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stream_on = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (tx, rx) = pipewire::channel::channel::<Msg>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
         let mix2 = mix.clone();
         let ok2 = ok.clone();
+        let on2 = stream_on.clone();
         let thread = std::thread::Builder::new().name("omaclack-pw".into()).spawn(move || {
-            pw_thread(mix2, rx, ready_tx, ok2);
+            pw_thread(mix2, rx, ready_tx, ok2, on2);
         }).map_err(|e| e.to_string())?;
         match ready_rx.recv_timeout(Duration::from_secs(3)) {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e),
             Err(_) => return Err("pipewire thread did not start".into()),
         }
-        Ok(InProcessPlayer { muted: false, target: None, cache: HashMap::new(), mix, tx, thread: Some(thread), ok })
+        Ok(InProcessPlayer { muted: false, target: None, cache: HashMap::new(), mix, stream_on, tx, thread: Some(thread), ok })
     }
 
     fn sample(&mut self, path: &Path) -> Option<Arc<Vec<f32>>> {
@@ -179,19 +182,23 @@ impl Player for InProcessPlayer {
             m.last_activity = Instant::now();
             !m.active
         };
-        if need_wake { let _ = self.tx.send(Msg::Wake); }
+        if need_wake {
+            self.stream_on.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = self.tx.send(Msg::Wake);
+        }
     }
 
     fn tick(&mut self) {
+        if !self.stream_on.load(std::sync::atomic::Ordering::Relaxed) { return; }
         let sleep = {
             let m = self.mix.lock().unwrap();
-            m.active && m.voices.is_empty() && m.last_activity.elapsed().as_secs_f64() > IDLE_S
+            m.voices.is_empty() && m.last_activity.elapsed().as_secs_f64() > IDLE_S
         };
         if sleep { let _ = self.tx.send(Msg::Sleep); }
     }
 
     fn poll_timeout_ms(&self) -> i32 {
-        if self.mix.lock().unwrap().active { 500 } else { 3000 }
+        if self.stream_on.load(std::sync::atomic::Ordering::Relaxed) { 500 } else { 3000 }
     }
 
     fn preload(&mut self, pack: &Pack) {
@@ -332,7 +339,8 @@ fn make_stream(core: &pipewire::core::CoreRc, mix: Arc<Mutex<Mix>>, target: &Opt
 }
 
 fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
-             ready: std::sync::mpsc::Sender<Result<(), String>>, ok: Arc<std::sync::atomic::AtomicBool>) {
+             ready: std::sync::mpsc::Sender<Result<(), String>>, ok: Arc<std::sync::atomic::AtomicBool>,
+             stream_on: Arc<std::sync::atomic::AtomicBool>) {
     use pipewire as pw;
     pw::init();
     let mainloop = match pw::main_loop::MainLoopRc::new(None) { Ok(m) => m, Err(e) => { let _ = ready.send(Err(e.to_string())); return } };
@@ -351,19 +359,27 @@ fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
     let mix_r = mix.clone();
     let state_r = state.clone();
     let ok_r = ok.clone();
+    let on_r = stream_on.clone();
     let _rx = rx.attach(mainloop.loop_(), move |msg| match msg {
         Msg::Wake => {
-            let mut m = mix_r.lock().unwrap();
-            if !m.active {
+            // Never call set_active while holding mix: the RT process callback
+            // also takes mix, and set_active waits for that thread — deadlock.
+            let already = mix_r.lock().unwrap().active;
+            if !already {
                 if let Some(s) = state_r.borrow().as_ref() { let _ = s.stream.set_active(true); }
-                m.active = true;
+                mix_r.lock().unwrap().active = true;
+                on_r.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
         Msg::Sleep => {
-            let mut m = mix_r.lock().unwrap();
-            if m.active && m.voices.is_empty() && m.last_activity.elapsed().as_secs_f64() > IDLE_S {
+            let should = {
+                let m = mix_r.lock().unwrap();
+                m.active && m.voices.is_empty() && m.last_activity.elapsed().as_secs_f64() > IDLE_S
+            };
+            if should {
                 if let Some(s) = state_r.borrow().as_ref() { let _ = s.stream.set_active(false); }
-                m.active = false;
+                mix_r.lock().unwrap().active = false;
+                on_r.store(false, std::sync::atomic::Ordering::Relaxed);
             }
         }
         Msg::Reconnect(target) => {
@@ -371,9 +387,14 @@ fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
             *state_r.borrow_mut() = None;
             match make_stream(&core2, mix_r.clone(), &target, ok_r.clone()) {
                 Ok(s) => {
-                    let mut m = mix_r.lock().unwrap();
-                    m.active = false;
-                    if !m.voices.is_empty() { let _ = s.stream.set_active(true); m.active = true; }
+                    let has_voices = !mix_r.lock().unwrap().voices.is_empty();
+                    mix_r.lock().unwrap().active = false;
+                    on_r.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if has_voices {
+                        let _ = s.stream.set_active(true);
+                        mix_r.lock().unwrap().active = true;
+                        on_r.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     *state_r.borrow_mut() = Some(s);
                 }
                 Err(_) => ok_r.store(false, std::sync::atomic::Ordering::Relaxed),
