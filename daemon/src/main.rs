@@ -336,7 +336,9 @@ fn main() {
                         if down && !keys.on_press(code, now_ms) { continue; }
                         let lat = ctl.play(code, now, down, if down { Some(name.as_str()) } else { None });
                         if let (Some(l), true) = (lat, down) {
-                            emit(&mut server, &mut pipe, &json!({"evt": "key", "key": code, "latency_ms": l}));
+                            // Latency only, and only on the parent pipe: the control
+                            // socket must not be a live keystream.
+                            emit_pipe(&mut pipe, &json!({"evt": "key", "latency_ms": l}));
                         }
                     }
                 }
@@ -360,9 +362,13 @@ fn velocity_gain(enabled: bool, dt_s: Option<f32>) -> f32 {
 
 fn pollfd(fd: RawFd) -> libc::pollfd { libc::pollfd { fd, events: libc::POLLIN, revents: 0 } }
 
+fn emit_pipe(pipe: &mut Option<ipc::LineChannel>, v: &Value) {
+    if let Some(p) = pipe.as_mut() { p.send(v); }
+}
+
 fn emit(server: &mut ipc::CtlServer, pipe: &mut Option<ipc::LineChannel>, v: &Value) {
     server.send(v);
-    if let Some(p) = pipe.as_mut() { p.send(v); }
+    emit_pipe(pipe, v);
 }
 
 static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

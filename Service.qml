@@ -312,7 +312,7 @@ Item {
     try { msg = JSON.parse(line) } catch (e) { return }
     if (!msg) return
     if (msg.evt === "key") {
-      lastEvent = msg
+      lastEvent = { latency_ms: msg.latency_ms }
       pushLatency(msg.latency_ms)
       return
     }

@@ -4,7 +4,8 @@ Mechanical keyboard and mouse click sounds for [Omarchy](https://omarchy.org)
 (Quattro shell). 25 keyboard packs and 10 mouse packs cut from real switch
 recordings, press and release for every key, panned by key position. The
 default Rust daemon mixes into one PipeWire stream; other CPUs fall back to
-one `pw-play` per event. No network, no logging. About 4 MB installed.
+one `pw-play` per event. Everything stays on this machine: no network, no
+logging, no keystrokes written to disk. About 4 MB installed.
 
 ```bash
 omarchy plugin add https://github.com/diogo7dias/omaclack.git --enable
@@ -103,7 +104,9 @@ omarchy-shell
   PipeWire binding, while any `Stream/Input/Audio` node exists (an app
   recording the microphone). The daemon never learns which app is focused.
 - **Stats** live in the daemon's memory only: a five-minute ring of press
-  timestamps and a per-key counter for the session. Nothing is written.
+  timestamps plus per-key counts for that window, and a session total with
+  no codes. Nothing is written. The control socket never sees a live
+  keystream; key events (latency only, no keycode) go to the parent pipe.
 
 ## IPC protocol
 
@@ -132,15 +135,17 @@ socket (one socket client at a time), `flock()` on `ctl.sock.lock`.
 
 Daemon-initiated events: `{"evt": "hello", ...status, "denied": bool}` on
 connect (status includes `packs`, `mouse_packs`, `rooms`, `devices`),
-`{"evt": "key", "key": 30, "latency_ms": 0.4}` per sounded press,
+`{"evt": "key", "latency_ms": 0.4}` per sounded press on the parent pipe
+only (no keycode; the control socket is not a keystream),
 `{"evt": "theme", "slug": ...}` after the theme hook.
-Latency is measured from the evdev read to the pw-play spawn.
+Latency is measured from the evdev read to the sample being handed to PipeWire.
 
 Try it by hand:
 
 ```bash
-python3 bin/omaclackd --socket=/tmp/st.sock &
-printf '{"cmd":"play","key":57}\n{"cmd":"quit"}\n' | nc -U /tmp/st.sock
+sock=$(mktemp -d)/ctl.sock
+python3 bin/omaclackd --socket="$sock" &
+printf '{"cmd":"play","key":57}\n{"cmd":"quit"}\n' | nc -U "$sock"
 ```
 
 ## Sound packs
@@ -268,8 +273,28 @@ bound themes switch packs automatically. Bindings live in `omaclack.json`.
 
 ## Privacy
 
-Reads keycodes only to pick a sample; never stores, logs, or transmits them.
-The socket is `0600` inside `$XDG_RUNTIME_DIR`. No network access anywhere.
+Omaclack never leaves this computer. There is no account, no telemetry, no
+update ping, no HTTP client. The committed daemon links PipeWire and
+libsndfile only; `grep` the tree for `http`, `AF_INET`, `urllib` and you
+will not find a runtime caller.
+
+What happens to a key:
+
+| step | what |
+|---|---|
+| Read | Linux keycode from `/dev/input/event*` (or a mouse button). Not the character, not a keymap. |
+| Used for | picking `sounds/<pack>/<code>.opus` and, for five minutes, an in-memory count on the More page. |
+| Written | never. Settings in `~/.config/omarchy/omaclack.json` are pack names, volumes, quiet hours, ignore-list app ids, theme bindings. No keystrokes. |
+| Sent off-machine | never. |
+| Sent on-machine | latency of that press, no keycode, over the parent pipe to omarchy-shell. The control socket (`0600`, directory `0700` when it is `$XDG_RUNTIME_DIR/omaclack`) does not stream keys. |
+
+The `input` group is the honest local caveat. Joining it lets *every* process
+of your user open `/dev/input`, not just Omaclack. That is Linux's model, not
+Omaclack phoning home. Wayland clients still cannot snoop keys; dropping the
+group would need a Hyprland compositor plugin.
+
+Stop it: disable the plugin, or `omarchy plugin disable io.github.diogo7dias.omaclack`.
+The daemon dies with the shell (stdin pipe closes). Nothing is left listening.
 
 ## License
 

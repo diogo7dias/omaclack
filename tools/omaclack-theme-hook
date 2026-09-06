@@ -4,7 +4,8 @@
 # bound to this theme (panel: "use this pack for theme ...").
 # Install: omarchy hook install theme-set /path/to/omaclack/tools/omaclack-theme-hook
 slug=${1:-}
-sock="${XDG_RUNTIME_DIR:-/tmp}/omaclack/ctl.sock"
+[[ -n $XDG_RUNTIME_DIR ]] || exit 0
+sock="$XDG_RUNTIME_DIR/omaclack/ctl.sock"
 [[ -S $sock ]] || exit 0
 python3 - "$sock" "$slug" <<'PY' 2>/dev/null || true
 import json, socket, sys

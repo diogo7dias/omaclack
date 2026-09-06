@@ -519,6 +519,15 @@ Panel {
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: "On this machine only. No network, no logs, no keystrokes saved."
+          color: root.dimFg
+          font.family: root.mono
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
       }
     }
   }

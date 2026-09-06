@@ -4,6 +4,7 @@
 use serde_json::Value;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
@@ -80,10 +81,7 @@ pub struct CtlServer {
 
 impl CtlServer {
     pub fn start(path: &Path) -> Result<Self, StartError> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(StartError::Io)?;
-            let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
-        }
+        prepare_socket_dir(path).map_err(StartError::Io)?;
         let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).mode_0600()
             .open(path.with_extension("sock.lock")).map_err(StartError::Io)?;
         let lockfd = lock.into_raw_fd();
@@ -91,8 +89,12 @@ impl CtlServer {
             return Err(StartError::Locked);
         }
         let _ = std::fs::remove_file(path);
-        let listener = UnixListener::bind(path).map_err(StartError::Io)?;
-        let _ = std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+        // umask 077 so the socket is never world-reachable between bind and chmod.
+        let old = unsafe { libc::umask(0o077) };
+        let listener = UnixListener::bind(path);
+        unsafe { libc::umask(old) };
+        let listener = listener.map_err(StartError::Io)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(StartError::Io)?;
         listener.set_nonblocking(true).map_err(StartError::Io)?;
         Ok(CtlServer { path: path.to_path_buf(), _lockfd: lockfd, listener, client: None })
     }
@@ -137,6 +139,22 @@ impl CtlServer {
 trait Mode0600 { fn mode_0600(&mut self) -> &mut Self; }
 impl Mode0600 for std::fs::OpenOptions {
     fn mode_0600(&mut self) -> &mut Self { std::os::unix::fs::OpenOptionsExt::mode(self, 0o600) }
+}
+
+/// Create the socket parent. Refuse a directory we do not own (so we never bind
+/// inside someone else's /tmp/omaclack). Only chmod when the dir is named
+/// `omaclack` — never 0700 the user's home because someone passed `--socket=~/ctl.sock`.
+fn prepare_socket_dir(path: &Path) -> io::Result<()> {
+    let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) else { return Ok(()); };
+    std::fs::create_dir_all(dir)?;
+    let meta = std::fs::metadata(dir)?;
+    if meta.uid() != unsafe { libc::getuid() } {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "socket directory is not owned by this user"));
+    }
+    if dir.file_name().and_then(|n| n.to_str()) == Some("omaclack") {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]

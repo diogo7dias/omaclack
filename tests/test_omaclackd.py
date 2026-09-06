@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -291,6 +292,7 @@ class SocketRoundTripTest(unittest.TestCase):
             self.assertEqual(hello["pack"], "mx-blue")
             self.assertIn("denied", hello)
             self.assertIsInstance(hello["denied"], bool)
+            self.assertEqual(stat.S_IMODE(os.stat(sock).st_mode), 0o600)
 
             def rpc(obj):
                 f.write((json.dumps(obj) + "\n").encode())
@@ -369,6 +371,74 @@ class SocketRoundTripTest(unittest.TestCase):
         self.assertEqual(p.wait(timeout=3), 0)
 
 
+
+
+class PrivacyTest(unittest.TestCase):
+    def test_daemon_source_has_no_network(self):
+        with open(DAEMON, encoding="utf-8") as f:
+            src = f.read()
+        for needle in ("urllib", "http.client", "requests", "AF_INET", "create_connection"):
+            self.assertNotIn(needle, src, needle)
+
+    def test_ctl_socket_dir_omaclack_is_0700_and_sock_0600(self):
+        tmp = tempfile.mkdtemp()
+        d = os.path.join(tmp, "omaclack")
+        sock = os.path.join(d, "ctl.sock")
+        srv = D.CtlServer(sock)
+        srv.start()
+        try:
+            self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(os.stat(sock).st_mode), 0o600)
+            self.assertEqual(os.stat(d).st_uid, os.getuid())
+        finally:
+            srv.close()
+
+    def test_stats_forget_keycodes_outside_five_minutes(self):
+        s = D.Stats()
+        s.press(30, 0.0)
+        s.press(31, 301.0)
+        r = s.report(301.0)
+        self.assertEqual(r["window"], 1)
+        self.assertEqual(r["total"], 2)
+        self.assertEqual(r["top"], [(31, 1)])
+
+    def test_play_over_socket_does_not_emit_a_key_event(self):
+        """play is a command reply, not a live keystream. Connecting to ctl.sock
+        must not start receiving {evt:key} frames."""
+        tmp = tempfile.mkdtemp()
+        sock = os.path.join(tmp, "ctl.sock")
+        proc = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        c = None
+        try:
+            for _ in range(50):
+                if os.path.exists(sock):
+                    break
+                time.sleep(0.05)
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c.connect(sock)
+            c.settimeout(0.4)
+            f = c.makefile("rwb", buffering=0)
+            hello = json.loads(f.readline())
+            self.assertEqual(hello["evt"], "hello")
+            f.write((json.dumps({"cmd": "play", "key": 57}) + "\n").encode())
+            reply = json.loads(f.readline())
+            self.assertTrue(reply.get("ok"))
+            self.assertNotEqual(reply.get("evt"), "key")
+            self.assertNotIn("key", reply)
+            c.settimeout(0.2)
+            try:
+                extra = f.readline()
+            except (TimeoutError, socket.timeout):
+                extra = b""
+            self.assertFalse(extra, extra)
+            f.write((json.dumps({"cmd": "quit"}) + "\n").encode())
+            self.assertEqual(proc.wait(timeout=3), 0)
+        finally:
+            if c is not None:
+                c.close()
+            if proc.poll() is None:
+                proc.kill()
 
 
 class InputReaderTest(unittest.TestCase):

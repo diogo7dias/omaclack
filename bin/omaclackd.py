@@ -328,22 +328,25 @@ class Stats:
     """In-memory typing stats for the panel. Dies with the process."""
 
     def __init__(self):
-        self.times = collections.deque()      # press timestamps, last 5 min
-        self.counts = collections.Counter()   # per keycode, session
-        self.total = 0
+        self.times = collections.deque()      # (t, code) last 5 min; counts follow the window
+        self.counts = collections.Counter()
+        self.total = 0                        # session total, no codes
 
     def press(self, code, now):
-        self.times.append(now)
+        self.times.append((now, code))
         self.counts[code] += 1
         self.total += 1
         cutoff = now - STATS_WINDOW_S
-        while self.times and self.times[0] < cutoff:
-            self.times.popleft()
+        while self.times and self.times[0][0] < cutoff:
+            _, c = self.times.popleft()
+            self.counts[c] -= 1
+            if self.counts[c] <= 0:
+                del self.counts[c]
 
     def report(self, now):
-        recent = [t for t in self.times if t >= now - 60.0]
+        recent = [t for t, _ in self.times if t >= now - 60.0]
         buckets = [0] * 10   # inter-key intervals in 60 ms steps, last bucket open
-        for a, b in zip(self.times, list(self.times)[1:]):
+        for (a, _), (b, _) in zip(self.times, list(self.times)[1:]):
             buckets[min(9, int((b - a) * 1000 // 60))] += 1
         top = sorted(self.counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
         return {"ok": True, "kpm": len(recent), "total": self.total,
@@ -635,7 +638,16 @@ class CtlServer:
         self.chan = None
 
     def start(self):
-        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        d = os.path.dirname(os.path.abspath(self.path))
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        st = os.stat(d)
+        if st.st_uid != os.getuid():
+            sys.stderr.write("omaclackd: socket directory is not owned by this user\n")
+            sys.exit(1)
+        # Only chmod the dedicated runtime dir. Never 0700 $HOME because someone
+        # passed --socket=~/ctl.sock.
+        if os.path.basename(d) == "omaclack":
+            os.chmod(d, 0o700)
         self.lockfd = os.open(self.path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(self.lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -646,7 +658,11 @@ class CtlServer:
         except FileNotFoundError:
             pass
         self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.srv.bind(self.path)
+        old = os.umask(0o077)
+        try:
+            self.srv.bind(self.path)
+        finally:
+            os.umask(old)
         os.chmod(self.path, 0o600)
         self.srv.listen(1)
         self.srv.setblocking(False)
@@ -734,10 +750,13 @@ def main(argv):
     except OSError:
         pass
 
-    def emit(obj):
-        server.send(obj)
+    def emit_pipe(obj):
         if pipe is not None:
             pipe.send(obj)
+
+    def emit(obj):
+        server.send(obj)
+        emit_pipe(obj)
 
     def dispatch(chan, msgs):
         nonlocal running
@@ -785,7 +804,9 @@ def main(argv):
                         continue
                     lat = ctl.play(code, now, down, name if down else None)
                     if lat is not None and down:
-                        emit({"evt": "key", "key": code, "latency_ms": lat})
+                        # Latency only, and only on the parent pipe: the control
+                        # socket must not be a live keystream.
+                        emit_pipe({"evt": "key", "latency_ms": lat})
 
     ctl.close()
     server.close()
