@@ -46,12 +46,19 @@ sudo usermod -aG input "$USER"   # then log out and back in
 
 Until then the panel shows `no /dev/input access` and nothing plays.
 
+Wayland clients cannot hear every key; that is a compositor security rule, not
+an Omaclack limitation. Hyprland's Lua `input.keyboard.key` event exists but
+must not block or fork, so it cannot drive per-key audio. A Hyprland plugin
+could forward keycodes to the daemon socket without the `input` group; that
+is a separate `.so` loaded by the compositor, not a Wayland protocol. Until
+someone ships that, the `input` group is the real door.
+
 ### Requirements
 
 - Omarchy Quattro (`omarchy-shell`).
 - PipeWire and a libsndfile that decodes Opus (standard on Omarchy).
-- x86_64 for the Rust daemon; anything else runs the Python 3.10+ fallback
-  (stdlib only, needs `pw-play`).
+- x86_64 or aarch64 for the Rust daemon (CI attaches both to GitHub releases);
+  anything else runs the Python 3.10+ fallback (stdlib only, needs `pw-play`).
 
 No sudo at runtime, no systemd units, no extra packages.
 
@@ -165,7 +172,7 @@ Then click "rescan packs" in the panel. Needs `ffmpeg`.
 | `mx-blue`, `mx-blue-pbt`, `mx-brown`, `mx-brown-pbt`, `mx-red`, `mx-black`, `mx-black-pbt` | Cherry MX Blue/Brown/Red/Black, ABS and PBT caps | [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx), per key, press + release |
 | `topre`, `eg-oreo`, `eg-crystal-purple` | Topre, Everglide Oreo, Everglide Crystal Purple | MechvibesDX, per key, press + release |
 | `mx-red-pbt`, `nk-cream` | Cherry MX Red PBT, Novelkeys Cream | [Mechvibes](https://github.com/hainguyents13/mechvibes), per key, release derived |
-| `holy-panda`, `buckling-spring`, `box-navy`, `alps-blue`, `alpaca`, `ink-black`, `ink-red`, `nk-cream-kbsim`, `mx-black-kbsim`, `mx-blue-kbsim`, `mx-brown-kbsim`, `topre-kbsim`, `turquoise` | Holy Panda, Buckling Spring, Kailh Box Navy, Alps Blue, Alpaca, Gateron Ink Black/Red, NK Cream, Cherry MX Black/Blue/Brown, Topre, Tecsee Turquoise | [kbsim](https://github.com/tplai/kbsim), per row, press + release |
+| `holy-panda`, `buckling-spring`, `box-navy`, `alps-blue`, `alpaca`, `ink-black`, `ink-red`, `nk-cream-kbsim`, `mx-black-kbsim`, `mx-blue-kbsim`, `mx-brown-kbsim`, `topre-kbsim`, `turquoise` | Holy Panda, Buckling Spring, Kailh Box Navy, Alps Blue, Alpaca, Gateron Ink Black/Red, NK Cream, Cherry MX Black/Blue/Brown, Topre, Tecsee Turquoise | [kbsim](https://github.com/tplai/kbsim), five row samples + space/enter/backspace, panned at playback |
 
 "Release derived" means no release was recorded, so the release is a short,
 quieter, slightly higher copy of the press. The panel says so under the chips.
@@ -208,6 +215,7 @@ Both licenses are reproduced in `sounds/LICENSES.md`.
 ```bash
 python3 -m unittest discover -s tests            # Python daemon internals + protocol, pack checks
 OMACLACKD_BIN=bin/omaclackd-x86_64 python3 -m unittest discover -s tests   # protocol tests against the Rust build
+cd daemon && cargo test                          # packs, velocity, stats, evdev unit tests
 tools/bench_daemon.py rust bin/omaclackd-x86_64  # startup, footprint, key-to-sound onset
 tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>   # re-import all packs (ffmpeg)
 tools/omaclack-import <folder-or-zip> [--mouse]  # add a pack to ~/.config/omarchy/omaclack/packs
