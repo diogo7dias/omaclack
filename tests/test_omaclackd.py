@@ -87,42 +87,52 @@ class KeyFilterTest(unittest.TestCase):
 class PackTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.d = os.path.join(self.tmp.name, "p")
-        os.makedirs(self.d)
-        for f in ("default.opus", "30.opus", "row1.opus"):
+        self.roots = [os.path.join(self.tmp.name, "shipped"), os.path.join(self.tmp.name, "user")]
+        self.d = os.path.join(self.roots[0], "p")
+        os.makedirs(os.path.join(self.d, "up"))
+        for f in ("default.opus", "30.opus", "row1.opus", "up/default.opus", "up/30.opus"):
             open(os.path.join(self.d, f), "wb").write(b"x")
         with open(os.path.join(self.d, "pack.json"), "w") as f:
-            json.dump({"name": "Pack P", "credit": "someone", "source": "https://x",
+            json.dump({"name": "Pack P", "credit": "someone", "source": "https://x", "release": "recorded",
                        "keys": {"31": "row1.opus", "30": "row1.opus", "99": "missing.opus"}}, f)
+        os.makedirs(os.path.join(self.roots[1], "mine"))
+        open(os.path.join(self.roots[1], "mine", "default.wav"), "wb").write(b"x")
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def test_lookup_order_and_fallbacks(self):
-        p = D.Pack("p", self.tmp.name)
+        p = D.Pack("p", self.roots)
         self.assertTrue(p.sample_for(30).endswith("/30.opus"))       # explicit file wins over keys map
         self.assertTrue(p.sample_for(31).endswith("/row1.opus"))     # keys map
         self.assertTrue(p.sample_for(99).endswith("/default.opus"))  # mapped file missing
         self.assertTrue(p.sample_for(272).endswith("/default.opus")) # mouse
-        self.assertEqual(D.list_packs(self.tmp.name), ["p"])
+        self.assertTrue(p.sample_for(30, down=False).endswith("/up/30.opus"))
+        self.assertTrue(p.sample_for(31, down=False).endswith("/up/default.opus"))
+        self.assertEqual(D.list_packs(self.roots), ["mine", "p"])
+
+    def test_release_optional(self):
+        p = D.Pack("mine", self.roots)
+        self.assertIsNone(p.release)
+        self.assertIsNone(p.sample_for(30, down=False))
 
     def test_meta(self):
-        m = D.pack_meta("p", self.tmp.name)
-        self.assertEqual(m, {"id": "p", "name": "Pack P", "credit": "someone", "source": "https://x"})
-        os.makedirs(os.path.join(self.tmp.name, "bare"))
-        open(os.path.join(self.tmp.name, "bare", "default.wav"), "wb").write(b"x")
-        self.assertEqual(D.pack_meta("bare", self.tmp.name)["name"], "bare")
+        m = D.pack_meta("p", self.roots)
+        self.assertEqual(m, {"id": "p", "name": "Pack P", "credit": "someone", "source": "https://x",
+                             "release": "recorded", "user": True})
+        self.assertEqual(D.pack_meta("mine", self.roots)["name"], "mine")
 
     def test_missing_default_raises(self):
-        os.makedirs(os.path.join(self.tmp.name, "empty"))
+        os.makedirs(os.path.join(self.roots[0], "empty"))
         with self.assertRaises(FileNotFoundError):
-            D.Pack("empty", self.tmp.name)
+            D.Pack("empty", self.roots)
 
 
 class ControllerTest(unittest.TestCase):
     def setUp(self):
         self.player = FakePlayer()
-        self.ctl = D.Controller(self.player, SOUNDS)
+        self.ctl = D.Controller(self.player, [SOUNDS], [os.path.join(SOUNDS, "mouse")])
+        self.ctl.velocity = False
 
     def test_loads_first_pack_by_default(self):
         self.assertEqual(self.ctl.pack.name, "mx-blue")
@@ -148,7 +158,8 @@ class ControllerTest(unittest.TestCase):
         self.assertIn("mx-blue", ids)
         self.assertEqual(st["packs"][ids.index("topre")]["credit"], "Mechvibes")
         self.assertNotIn("mouse", ids)
-        self.assertEqual([p["id"] for p in st["mouse_packs"]], ["crisp", "logitech", "razer"])
+        self.assertEqual([p["id"] for p in st["mouse_packs"]],
+                         ["chat", "crisp", "deep", "logitech", "ping", "razer", "soft", "studio", "vibrate", "wooden"])
         self.assertEqual(self.ctl.handle({"cmd": "mousepack", "pack": "razer"})["mouse_pack"], "razer")
         self.assertFalse(self.ctl.handle({"cmd": "mousepack", "pack": "nope"})["ok"])
         bad = self.ctl.handle({"cmd": "load", "pack": "nope"})
@@ -164,40 +175,72 @@ class ControllerTest(unittest.TestCase):
         self.assertTrue(self.player.played[1].endswith("/mouse/logitech/left.opus"))
         self.assertTrue(self.ctl.handle({"cmd": "play", "key": 273})["ok"])
         self.assertTrue(self.player.played[2].endswith("/mouse/logitech/right.opus"))
+        self.assertTrue(self.ctl.handle({"cmd": "play", "key": 30, "down": False})["ok"])
+        self.assertTrue(self.player.played[3].endswith("/mx-blue/up/30.opus"))
+        self.assertAlmostEqual(self.player.volumes[3], 0.7 * D.RELEASE_GAIN)
+        self.ctl.handle({"cmd": "release", "value": False})
+        self.assertFalse(self.ctl.handle({"cmd": "play", "key": 30, "down": False})["ok"])
         self.ctl.handle({"cmd": "mouse", "value": False})
         self.assertFalse(self.ctl.handle({"cmd": "play", "key": 272})["ok"])
         self.ctl.handle({"cmd": "enable", "value": False})
         self.assertFalse(self.ctl.handle({"cmd": "play", "key": 30})["ok"])
+
+    def test_velocity_gain(self):
+        self.ctl.velocity = True
+        self.ctl.handle({"cmd": "volume", "value": 100})
+        self.ctl.play(30, 10.0)            # first key: no history, full volume
+        self.ctl.play(31, 10.05)           # 50 ms later: full
+        self.ctl.play(32, 11.0)            # 950 ms later: relaxed
+        self.ctl.play(33, 11.3)            # 300 ms: in between
+        v = [round(x, 2) for x in self.player.volumes]
+        self.assertEqual(v[:3], [1.0, 1.0, 0.8])
+        self.assertTrue(0.8 < v[3] < 1.0)
+        self.assertEqual(self.ctl.handle({"cmd": "stats"})["total"], 4)
+        self.assertEqual(self.ctl.handle({"cmd": "stats"})["top"][0][1], 1)
+
+    def test_room_and_theme_commands(self):
+        started = []
+        self.ctl.room.start = lambda name: started.append(name)
+        self.assertEqual(self.ctl.handle({"cmd": "room", "value": "wood"})["room"], "wood")
+        self.assertEqual(started, ["wood"])
+        self.assertEqual(self.ctl.handle({"cmd": "room", "value": "bogus"})["room"], "none")
+        self.assertEqual([r["id"] for r in self.ctl.status()["rooms"]], ["desk", "tray", "wood", "wall"])
+        r = self.ctl.handle({"cmd": "theme", "slug": "tokyo-night"})
+        self.assertEqual((r["evt"], r["slug"]), ("theme", "tokyo-night"))
+        self.assertTrue(self.player.played[-1].endswith("/28.opus"))
 
     def test_unknown_cmd(self):
         self.assertFalse(self.ctl.handle({"cmd": "zzz"})["ok"])
 
 
 class SoundPacksTest(unittest.TestCase):
-    PACKS = ["alps-blue", "box-navy", "buckling-spring", "holy-panda",
-             "mx-black", "mx-blue", "mx-brown", "mx-red", "topre"]
+    PACKS = ["alpaca", "alps-blue", "box-navy", "buckling-spring", "eg-crystal-purple", "eg-oreo",
+             "holy-panda", "ink-black", "ink-red", "mx-black", "mx-black-kbsim", "mx-black-pbt",
+             "mx-blue", "mx-blue-kbsim", "mx-blue-pbt", "mx-brown", "mx-brown-kbsim", "mx-brown-pbt",
+             "mx-red", "mx-red-pbt", "nk-cream", "nk-cream-kbsim", "topre", "topre-kbsim", "turquoise"]
+    MOUSE = ["chat", "crisp", "deep", "logitech", "ping", "razer", "soft", "studio", "vibrate", "wooden"]
 
-    MOUSE = ["crisp", "logitech", "razer"]
-
-    def test_every_pack_is_credited_opus_and_small(self):
-        self.assertEqual(D.list_packs(SOUNDS), self.PACKS)
-        self.assertEqual(D.list_packs(os.path.join(SOUNDS, "mouse")), self.MOUSE)
+    def test_every_pack_is_credited_opus_with_release(self):
+        self.assertEqual(D.list_packs([SOUNDS]), self.PACKS)
+        self.assertEqual(D.list_packs([os.path.join(SOUNDS, "mouse")]), self.MOUSE)
         for p in self.PACKS + ["mouse/" + m for m in self.MOUSE]:
             d = os.path.join(SOUNDS, p)
             meta = json.load(open(os.path.join(d, "pack.json")))
-            for k in ("name", "credit", "source", "license"):
+            for k in ("name", "credit", "source", "license", "release"):
                 self.assertTrue(meta.get(k), "%s missing %s" % (p, k))
-            files = [f for f in os.listdir(d) if f != "pack.json"]
-            self.assertIn("default.opus", files)
-            for f in files:
-                self.assertTrue(f.endswith(".opus"), f)
-                with open(os.path.join(d, f), "rb") as fh:
-                    head = fh.read(4)
-                self.assertEqual(head, b"OggS", "%s/%s is not an Ogg container" % (p, f))
-                self.assertLess(os.path.getsize(os.path.join(d, f)), 12000, "%s/%s too big" % (p, f))
-            pack = D.Pack(p, SOUNDS)
+            self.assertTrue(os.path.isfile(os.path.join(d, "default.opus")), p)
+            self.assertTrue(os.path.isfile(os.path.join(d, "up", "default.opus")), p)
+            for root, _, files in os.walk(d):
+                for f in files:
+                    if f == "pack.json":
+                        continue
+                    self.assertTrue(f.endswith(".opus"), f)
+                    self.assertLess(os.path.getsize(os.path.join(root, f)), 12000, "%s/%s too big" % (p, f))
+            roots = [os.path.join(SOUNDS, "mouse")] if p.startswith("mouse/") else [SOUNDS]
+            pack = D.Pack(p.split("/")[-1], roots)
             for code in (1, 30, 57, 28, 14, 105, 272, 273):
                 self.assertTrue(os.path.isfile(pack.sample_for(code)))
+                self.assertTrue(os.path.isfile(pack.sample_for(code, down=False)))
 
     def test_every_sample_opens_in_libsndfile(self):
         """pw-play decodes via libsndfile; a rejected file is a silent key."""
@@ -327,6 +370,8 @@ class InputReaderTest(unittest.TestCase):
             ev.pack(0, 0, 0x00, 0, 0),          # SYN_REPORT
         ]))
         self.assertEqual(list(r.read_presses(rd)), [30, 0x110])
+        os.write(wr, ev.pack(0, 0, D.EV_KEY, 30, 1) + ev.pack(0, 0, D.EV_KEY, 30, 0))
+        self.assertEqual(list(r.read_events(rd)), [(30, True), (30, False)])
         os.close(wr)
         self.assertEqual(list(r.read_presses(rd)), [])   # EOF closes fd
         self.assertNotIn(rd, r.fds)

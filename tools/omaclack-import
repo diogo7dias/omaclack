@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Import a Mechvibes / MechvibesDX sound pack for Omaclack.
+
+Usage: tools/omaclack-import <folder-or-zip> [--mouse] [--id <pack-id>] [--name "<Display name>"]
+
+Accepts:
+  - Mechvibes "single" packs: config.json with "sound" + "defines" {code: [start_ms, dur_ms]}
+  - MechvibesDX packs:        config.json with "audio_file" + "definitions" {KeyName: {timing: [[p0,p1],[r0,r1]]}}
+  - Mechvibes "multi" packs:  config.json with "defines" {code: "file.wav"}
+  - A plain folder of audio files named <linux-keycode>.wav/.mp3/.ogg (default.* optional)
+
+Output goes to ~/.config/omarchy/omaclack/packs/<id>/ (or packs/mouse/<id>/ with --mouse),
+encoded exactly like the shipped packs (mono/stereo 48 kHz Opus, libsndfile-validated).
+Needs ffmpeg. Then click "rescan packs" in the panel.
+"""
+import importlib.util
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+import zipfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+spec = importlib.util.spec_from_file_location("build_sounds", os.path.join(HERE, "build_sounds.py"))
+B = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(B)
+
+USER_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                        "omarchy", "omaclack", "packs")
+
+
+def slug(s):
+    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+    return s or "imported"
+
+
+def main(argv):
+    args = [a for a in argv[1:]]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 2
+    src = args[0]
+    mouse = "--mouse" in args
+    pid = args[args.index("--id") + 1] if "--id" in args else None
+    name = args[args.index("--name") + 1] if "--name" in args else None
+
+    tmp = None
+    if zipfile.is_zipfile(src):
+        tmp = tempfile.mkdtemp(prefix="omaclack-import-")
+        with zipfile.ZipFile(src) as z:
+            for m in z.infolist():
+                if ".." in m.filename or m.filename.startswith("/"):
+                    continue
+                z.extract(m, tmp)
+        src = tmp
+        # A zip usually wraps a single folder.
+        entries = [e for e in os.listdir(src) if not e.startswith(".")]
+        if len(entries) == 1 and os.path.isdir(os.path.join(src, entries[0])):
+            src = os.path.join(src, entries[0])
+    if not os.path.isdir(src):
+        print("not a folder or zip:", src)
+        return 1
+
+    cfg = {}
+    cfg_path = os.path.join(src, "config.json")
+    if os.path.isfile(cfg_path):
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+    pid = pid or slug(cfg.get("id") or cfg.get("name") or os.path.basename(src.rstrip("/")))
+    name = name or cfg.get("name") or pid
+    out_root = os.path.join(USER_DIR, "mouse") if mouse else USER_DIR
+    B.OUT = out_root
+    out = os.path.join(out_root, pid)
+    B.clear_pack(pid)
+
+    codes = {}       # linux code -> (src, start_s, dur_s, rel_start_s, rel_dur_s)
+    if "definitions" in cfg:                       # MechvibesDX
+        sprite = os.path.join(src, cfg.get("audio_file", "sound.ogg"))
+        names = B.DX_CODES if not mouse else {"MouseLeft": 272, "MouseRight": 273, "MouseMiddle": 274}
+        for kname, d in cfg["definitions"].items():
+            code = names.get(kname)
+            t = d.get("timing") if isinstance(d, dict) else None
+            if code is None or not t:
+                continue
+            (p0, p1) = t[0]
+            (r0, r1) = t[1] if len(t) > 1 else (None, None)
+            codes[code] = (sprite, p0 / 1000, min(p1 - p0, 250) / 1000,
+                           None if r0 is None else r0 / 1000, None if r0 is None else min(r1 - r0, 200) / 1000)
+    elif cfg.get("key_define_type") == "single" or (cfg.get("defines") and isinstance(next(iter(cfg["defines"].values()), None), list)):
+        sprite = os.path.join(src, cfg.get("sound", "sound.ogg"))
+        for raw, span in cfg["defines"].items():
+            code = B.iohook_code(raw)
+            if code is None or not isinstance(span, list):
+                continue
+            up = cfg["defines"].get(str(raw) + "-up")
+            codes[code] = (sprite, span[0] / 1000, min(span[1], 250) / 1000,
+                           up[0] / 1000 if isinstance(up, list) else None,
+                           min(up[1], 200) / 1000 if isinstance(up, list) else None)
+    elif cfg.get("defines"):                       # Mechvibes multi: code -> file
+        for raw, fn in cfg["defines"].items():
+            code = B.iohook_code(raw)
+            if code is None or not isinstance(fn, str) or not os.path.isfile(os.path.join(src, fn)):
+                continue
+            codes[code] = (os.path.join(src, fn), 0.0, 0.25, None, None)
+    else:                                          # plain folder of <code>.<ext>
+        for fn in os.listdir(src):
+            stem, ext = os.path.splitext(fn)
+            if ext.lower() in (".wav", ".mp3", ".ogg", ".flac", ".opus") and stem.isdigit():
+                codes[int(stem)] = (os.path.join(src, fn), 0.0, 0.25, None, None)
+    if not codes:
+        print("no keys found in", src)
+        return 1
+
+    gains = {}
+    for code, (s, st, du, r0, rd) in sorted(codes.items()):
+        if s not in gains:
+            gains[s] = B.peak_gain(s)
+        pan = None if mouse else B.key_pan(code)
+        B.encode(s, os.path.join(out, "%d.opus" % code), st, du, gains[s], pan)
+        if r0 is not None:
+            B.encode(s, os.path.join(out, "up", "%d.opus" % code), r0, rd, gains[s] - 3.0, pan)
+        else:
+            B.derive_release(s, os.path.join(out, "up", "%d.opus" % code), st, du, gains[s], pan)
+    first = "%d.opus" % (30 if 30 in codes else sorted(codes)[0])
+    B.link_default(out, first)
+    B.link_default(os.path.join(out, "up"), first)
+    derived = any(r0 is None for (_, _, _, r0, _) in codes.values())
+    B.write_pack(pid, {"name": name, "credit": str(cfg.get("author") or "imported"),
+                       "source": str(cfg.get("source") or ""), "license": "see source",
+                       "release": "derived" if derived else "recorded", "stereo": not mouse,
+                       **({"keys": B.MOUSE_KEYS} if mouse else {})})
+    print("installed", out)
+    if tmp:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

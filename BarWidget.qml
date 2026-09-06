@@ -42,6 +42,7 @@ BarWidget {
     source: Qt.resolvedUrl("Panel.qml")
     visible: false
     onLoaded: { root.injectPanel(); Qt.callLater(root.injectPanel) }
+    onStatusChanged: if (status === Loader.Error) console.warn("omaclack: Panel.qml failed to load:", sourceComponent ? sourceComponent.errorString() : "")
   }
 
   BarIconButton {

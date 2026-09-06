@@ -1,12 +1,27 @@
 # Omaclack
 
-Mechanical keyboard typing sounds for [Omarchy](https://omarchy.org) (Quattro shell).
-Per-key sound packs cut from real switch recordings, one `pw-play` per
-keypress, no network, no logging. About 800 KB installed.
+Mechanical keyboard and mouse click sounds for [Omarchy](https://omarchy.org)
+(Quattro shell). 25 keyboard packs and 10 mouse packs cut from real switch
+recordings, press and release for every key, panned by key position, one
+`pw-play` per event, no network, no logging. About 4 MB installed.
 
-Bar widget with a keycap-and-waveform glyph. Click it for the panel: on/off, keyboard
-volume and pack, mouse clicks with their own volume and pack, ignored apps,
-and a live latency chart. Right-click toggles, the wheel nudges keyboard volume.
+```bash
+omarchy plugin add https://github.com/diogo7dias/omaclack.git --enable
+```
+
+Bar widget with a keycap-and-waveform glyph. Left-click opens the panel,
+right-click toggles, the wheel nudges keyboard volume. The panel has:
+
+- keyboard volume and pack, with a hint for the keyboard you are actually typing on
+- feel: velocity (louder when you type fast), release sounds, and room presets
+  (on the desk, deep tray, wooden desk, through a wall) rendered live by a
+  PipeWire filter chain
+- mouse clicks with their own pack and volume
+- quiet: mute while any app records the microphone, and quiet hours
+- ignored apps by Wayland app id
+- a typing card (keys per minute, rhythm, top keys) and a latency chart
+- theme binding: pick a pack per Omarchy theme, switched by a theme-set hook
+- import of any Mechvibes or MechvibesDX pack into your own packs folder
 
 ## Install
 
@@ -55,16 +70,25 @@ omarchy-shell
 - **omaclackd** opens every `/dev/input/event*` it can, `select()`s on them,
   keeps only key-down events for keyboard codes (`< 0x100`) and mouse buttons
   (`BTN_LEFT..BTN_TASK`). Same key within 30 ms is dropped; every other press
-  sounds, modifiers included. Mouse buttons play from a separate mouse pack.
+  sounds, modifiers included, and so does the release (`up/<code>.opus`, 30%
+  quieter). Mouse buttons play from a separate mouse pack. Velocity scales a
+  key from 80% (unhurried) to 100% (the previous key was under 100 ms ago).
 - **Playback**: each keypress spawns `pw-play --volume <gain> sounds/<pack>/<code>.opus`
   (capped at 16 in flight, children reaped without threads). No audio bytes pass
   through Python: pw-play decodes the Opus file with libsndfile and exits when
   it ends. Measured against a persistent paced stream, the one-shot approach
   had identical onset latency (within 2 ms), so it stays: nothing resident, no
   stream state, and the daemon idles in `select()` between keys.
-- **Ignore list**: the service watches the focused Wayland toplevel and mutes
-  the daemon while its app id is listed. The daemon itself never learns which
-  app is focused.
+- **Rooms**: a preset spawns `pipewire -c <generated conf>` with a
+  filter-chain sink (low shelf, lowpass, convolver on a synthesised impulse
+  response written to `$XDG_RUNTIME_DIR/omaclack`), and pw-play targets it.
+  The sink suspends when idle and the child dies with the preset or the daemon.
+- **Ignore list and calls**: the service watches the focused Wayland toplevel
+  and mutes the daemon while its app id is listed, and, via Quickshell's
+  PipeWire binding, while any `Stream/Input/Audio` node exists (an app
+  recording the microphone). The daemon never learns which app is focused.
+- **Stats** live in the daemon's memory only: a five-minute ring of press
+  timestamps and a per-key counter for the session. Nothing is written.
 
 ## IPC protocol
 
@@ -77,6 +101,12 @@ socket (one socket client at a time), `flock()` on `ctl.sock.lock`.
 {"cmd": "mousepack", "pack": "razer"} → {"ok": true, "mouse_pack": "razer"}
 {"cmd": "volume", "value": 70}        → {"ok": true, "volume": 70}          keyboard
 {"cmd": "mousevolume", "value": 40}   → {"ok": true, "mouse_volume": 40}    mouse buttons
+{"cmd": "play", "key": 30, "down": false} → release sample
+{"cmd": "velocity", "value": true}    → {"ok": true, "velocity": true}
+{"cmd": "release", "value": true}     → {"ok": true, "release": true}
+{"cmd": "room", "value": "wood"}      → {"ok": true, "room": "wood"}       none|desk|tray|wood|wall
+{"cmd": "stats"}                      → {"ok": true, "kpm": 61, "total": 812, "rhythm": [...10], "top": [[30, 90], ...]}
+{"cmd": "theme", "slug": "tokyo-night"} → plays a key, emits {"evt": "theme", "slug": ...}
 {"cmd": "mute", "toggle": true}       → {"ok": true, "muted": true}
 {"cmd": "mouse", "value": false}      → {"ok": true, "mouse": false}
 {"cmd": "enable", "value": true}      → {"ok": true, "enabled": true}
@@ -86,7 +116,9 @@ socket (one socket client at a time), `flock()` on `ctl.sock.lock`.
 ```
 
 Daemon-initiated events: `{"evt": "hello", ...status, "denied": bool}` on
-connect, `{"evt": "key", "key": 30, "latency_ms": 0.4}` per sounded key.
+connect (status includes `packs`, `mouse_packs`, `rooms`, `devices`),
+`{"evt": "key", "key": 30, "latency_ms": 0.4}` per sounded press,
+`{"evt": "theme", "slug": ...}` after the theme hook.
 Latency is measured from the evdev read to the pw-play spawn.
 
 Try it by hand:
@@ -98,55 +130,65 @@ printf '{"cmd":"play","key":57}\n{"cmd":"quit"}\n' | nc -U /tmp/st.sock
 
 ## Sound packs
 
-`sounds/<pack>/<keycode>.opus` plus `default.opus` (fallback for unmapped keys
-and mouse buttons) and `pack.json` with `name`, `credit`, `source`, `license`
-and an optional `keys` map (`{"30": "row3.opus"}`) for packs that share one
-sample across many keys. Keycodes are Linux `KEY_*` numbers (`30` = A,
-`57` = space, `28` = enter). Files are mono 48 kHz Opus, about 1.5 KB each.
+```
+sounds/<pack>/<code>.opus        press   (stereo 48 kHz Opus, ~1 KB, panned by key position)
+sounds/<pack>/up/<code>.opus     release
+sounds/<pack>/{,up/}default.opus fallback for unmapped keys
+sounds/<pack>/pack.json          name, credit, source, license, release: recorded|derived, optional keys map
+sounds/mouse/<pack>/...          left/right/middle(.opus) + up/, keys map to BTN_* codes
+```
 
-Nine packs ship, all MIT-licensed recordings from two projects:
+Keycodes are Linux `KEY_*` numbers (`30` = A, `57` = space, `28` = enter).
+Your own packs go in `~/.config/omarchy/omaclack/packs/` (and `packs/mouse/`)
+and show up with a dot after their name. Import any Mechvibes, MechvibesDX or
+plain folder-of-wavs pack:
 
-| pack              | name            | source                                                          |
-|-------------------|-----------------|-----------------------------------------------------------------|
-| `mx-blue`         | Cherry MX Blue  | [Mechvibes](https://github.com/hainguyents13/mechvibes) per-key |
-| `mx-brown`        | Cherry MX Brown | Mechvibes per-key                                               |
-| `mx-red`          | Cherry MX Red   | Mechvibes per-key                                               |
-| `mx-black`        | Cherry MX Black | Mechvibes per-key                                               |
-| `topre`           | Topre           | Mechvibes per-key                                               |
-| `holy-panda`      | Holy Panda      | [kbsim](https://github.com/tplai/kbsim) per-row                 |
-| `buckling-spring` | Buckling Spring | kbsim per-row                                                   |
-| `box-navy`        | Kailh Box Navy  | kbsim per-row                                                   |
-| `alps-blue`       | Alps Blue       | kbsim per-row                                                   |
+```bash
+tools/omaclack-import ~/Downloads/some-mechvibes-pack.zip          # keyboard
+tools/omaclack-import ~/Downloads/clicks --mouse --name "My mouse"  # mouse
+```
 
-Mouse buttons use their own packs and volume. Packs live under
-`sounds/mouse/<pack>/` with `left.opus`, `right.opus`, `middle.opus` (side
-buttons reuse middle), each trimmed to the press and its release so one
-physical click is one sound:
+Then click "rescan packs" in the panel. Needs `ffmpeg`.
 
-| pack       | recording                                                        |
-|------------|------------------------------------------------------------------|
-| `logitech` | OwlStorm, [Freesound 320146](https://freesound.org/s/320146/), CC0 |
-| `razer`    | Katsuhira, [Freesound 555394](https://freesound.org/s/555394/), CC0 |
-| `crisp`    | Six Ways, [Freesound 223445](https://freesound.org/s/223445/), CC0 |
+### Keyboard packs (25)
 
-These are the trimmed and filtered renders from
-[Omarchy Typetone](https://github.com/phuclh/omarchy-typetone) (MIT).
+| pack | name | source |
+|---|---|---|
+| `mx-blue`, `mx-blue-pbt`, `mx-brown`, `mx-brown-pbt`, `mx-red`, `mx-black`, `mx-black-pbt` | Cherry MX Blue/Brown/Red/Black, ABS and PBT caps | [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx), per key, press + release |
+| `topre`, `eg-oreo`, `eg-crystal-purple` | Topre, Everglide Oreo, Everglide Crystal Purple | MechvibesDX, per key, press + release |
+| `mx-red-pbt`, `nk-cream` | Cherry MX Red PBT, Novelkeys Cream | [Mechvibes](https://github.com/hainguyents13/mechvibes), per key, release derived |
+| `holy-panda`, `buckling-spring`, `box-navy`, `alps-blue`, `alpaca`, `ink-black`, `ink-red`, `nk-cream-kbsim`, `mx-black-kbsim`, `mx-blue-kbsim`, `mx-brown-kbsim`, `topre-kbsim`, `turquoise` | Holy Panda, Buckling Spring, Kailh Box Navy, Alps Blue, Alpaca, Gateron Ink Black/Red, NK Cream, Cherry MX Black/Blue/Brown, Topre, Tecsee Turquoise | [kbsim](https://github.com/tplai/kbsim), per row, press + release |
 
-The panel shows the credit under each set of chips; clicking it opens the
-source. Rebuild from upstream checkouts with
-`tools/build_sounds.py <mechvibes> <kbsim> <typetone>` (needs `ffmpeg` and
-`libsndfile`, build-time only; every file is checked to open in libsndfile
-because that is what `pw-play` decodes with).
+"Release derived" means no release was recorded, so the release is a short,
+quieter, slightly higher copy of the press. The panel says so under the chips.
 
-Add your own: drop a folder with at least `default.opus` (or `.wav`, `.ogg`,
-`.flac`) into `sounds/` and it appears in the panel on the next connect.
+### Mouse packs (10)
+
+| pack | recording |
+|---|---|
+| `logitech` | OwlStorm, [Freesound 320146](https://freesound.org/s/320146/), CC0, via Typetone |
+| `razer` | Katsuhira, [Freesound 555394](https://freesound.org/s/555394/), CC0, via Typetone |
+| `crisp` | Six Ways, [Freesound 223445](https://freesound.org/s/223445/), CC0, via Typetone |
+| `soft`, `deep` | Breviceps, [Freesound 447938](https://freesound.org/s/447938/), CC0, via Typetone |
+| `studio` | 1j01, [OpenGameArt middle click](https://opengameart.org/content/middle-mouse-click), CC0, via Typetone |
+| `wooden`, `ping`, `chat`, `vibrate` | MechvibesDX mouse packs, MIT |
+
+Each mouse sample is split into the press and its release so one physical
+click is one sound.
+
+Rebuild everything from upstream checkouts with
+`tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>` (needs
+`ffmpeg` and `libsndfile`, build-time only; every file is checked to open in
+libsndfile because that is what `pw-play` decodes with).
 
 ## Credits
 
-- **Mechvibes** by [hainguyents13](https://github.com/hainguyents13/mechvibes),
-  MIT. The Cherry MX and Topre packs are sliced from its `src/audio/*` sprites.
-- **kbsim** by [Thomas Lai](https://github.com/tplai/kbsim), MIT. The Holy
-  Panda, Buckling Spring, Box Navy and Alps Blue packs are its `press/` samples.
+- **Mechvibes** and **MechvibesDX** by [hainguyents13](https://github.com/hainguyents13),
+  MIT. The Cherry MX, Topre, Everglide and NK Cream packs are sliced from their
+  sprites using MechvibesDX's press/release timings; the wooden, ping, chat and
+  vibrate mouse packs are MechvibesDX's.
+- **kbsim** by [Thomas Lai](https://github.com/tplai/kbsim), MIT. Thirteen
+  packs are its `press/` and `release/` samples.
 - **Omarchy Typetone** by [phuclh](https://github.com/phuclh/omarchy-typetone),
   MIT. The mouse packs are its `mouse-sounds/` renders of CC0 Freesound
   recordings by OwlStorm, Katsuhira and Six Ways.
@@ -157,7 +199,9 @@ Both licenses are reproduced in `sounds/LICENSES.md`.
 
 ```bash
 python3 -m unittest discover -s tests            # daemon, player, filter, protocol, pack checks
-tools/build_sounds.py <mechvibes> <kbsim> <typetone>   # re-import sound packs (ffmpeg)
+tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>   # re-import all packs (ffmpeg)
+tools/omaclack-import <folder-or-zip> [--mouse]  # add a pack to ~/.config/omarchy/omaclack/packs
+tools/omaclack-theme-hook <slug>                 # what the Omarchy theme-set hook runs
 tools/dev-reload                                 # nudge the shell when the plugin dir is a symlink
 ```
 
@@ -168,6 +212,13 @@ symlinks, so edits go unnoticed until you run `tools/dev-reload` (recreates the
 symlink, which the watcher does see); and a QML file that fails to compile can
 stay cached in the running shell after you fix it, so if the panel still will
 not open after a reload, `omarchy restart shell`.
+
+## Theme hook
+
+The panel's "theme hook not installed" chip runs
+`omarchy hook install theme-set tools/omaclack-theme-hook`. After that every
+theme change plays a key and the panel offers "use this pack for theme X";
+bound themes switch packs automatically. Bindings live in `omaclack.json`.
 
 ## Privacy
 
