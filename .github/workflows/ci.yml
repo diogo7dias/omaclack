@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  release:
+    types: [published]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 libsndfile1 libpipewire-0.3-dev libsndfile1-dev pkg-config clang
+      - name: python tests
+        run: python3 -m unittest -v tests/test_omaclackd.py
+      - name: cargo test
+        run: cargo test --manifest-path daemon/Cargo.toml
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: omaclackd-x86_64
+          - os: ubuntu-24.04-arm
+            artifact: omaclackd-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libsndfile1-dev pkg-config clang
+      - name: release build
+        run: cargo build --release --manifest-path daemon/Cargo.toml
+      - name: stage binary
+        run: cp daemon/target/release/omaclackd "${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            omaclackd-x86_64/omaclackd-x86_64
+            omaclackd-aarch64/omaclackd-aarch64
