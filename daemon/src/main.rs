@@ -212,7 +212,13 @@ impl Controller {
                 self.player.set_target(if name == "none" { None } else { Some(room::ROOM_SINK.to_string()) });
                 json!({"ok": true, "room": name})
             }
-            "stats" => { let now = self.now_s(); self.stats.report(now) }
+            "stats" => {
+                let mut r = self.stats.report(self.now_s());
+                let mut devs: Vec<(&String, &u64)> = self.devices.iter().collect();
+                devs.sort_by(|a, b| b.1.cmp(a.1));
+                r["devices"] = json!(devs.iter().map(|d| d.0.clone()).collect::<Vec<_>>());
+                r
+            }
             "status" => self.status(),
             "theme" => {
                 self.play(28, Instant::now(), true, None);
@@ -248,6 +254,8 @@ fn main() {
     let mut ctl = Controller::new(player, sounds_dir(), user_dir());
     let mut keys = KeyFilter { last: HashMap::new() };
     let mut inputs = evdev::InputReader::new();
+    // Scan once before hello so `denied` is real, not the default false.
+    inputs.scan();
 
     unsafe {
         libc::signal(libc::SIGTERM, handle_signal as *const () as usize);
@@ -296,6 +304,9 @@ fn main() {
                     for m in msgs {
                         let mut resp = ctl.handle(&m);
                         resp["id"] = m.get("id").cloned().unwrap_or(Value::Null);
+                        if m.get("cmd").and_then(|c| c.as_str()) == Some("status") {
+                            resp["denied"] = json!(inputs.denied);
+                        }
                         let theme = resp.get("evt").and_then(|e| e.as_str()) == Some("theme");
                         let quit = resp.get("quit").and_then(|q| q.as_bool()).unwrap_or(false);
                         server.send(&resp);
@@ -304,17 +315,24 @@ fn main() {
                     }
                 }
                 Role::Pipe => {
-                    let p = pipe.as_mut().unwrap();
-                    let msgs = p.read_messages();
-                    if p.eof { running = false; }
+                    let msgs = pipe.as_mut().unwrap().read_messages();
+                    let eof = pipe.as_ref().unwrap().eof;
+                    if eof { running = false; }
+                    let mut themes: Vec<Value> = Vec::new();
                     for m in msgs {
                         let mut resp = ctl.handle(&m);
                         resp["id"] = m.get("id").cloned().unwrap_or(Value::Null);
+                        if m.get("cmd").and_then(|c| c.as_str()) == Some("status") {
+                            resp["denied"] = json!(inputs.denied);
+                        }
                         let theme = resp.get("evt").and_then(|e| e.as_str()) == Some("theme");
                         let quit = resp.get("quit").and_then(|q| q.as_bool()).unwrap_or(false);
-                        p.send(&resp);
-                        if theme { let ev = json!({"evt": "theme", "slug": resp["slug"]}); server.send(&ev); }
+                        pipe.as_mut().unwrap().send(&resp);
+                        if theme { themes.push(resp["slug"].clone()); }
                         if quit { running = false; }
+                    }
+                    for slug in themes {
+                        emit(&mut server, &mut pipe, &json!({"evt": "theme", "slug": slug}));
                     }
                 }
                 Role::Input(fd) => {

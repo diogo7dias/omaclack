@@ -345,9 +345,10 @@ class Stats:
         buckets = [0] * 10   # inter-key intervals in 60 ms steps, last bucket open
         for a, b in zip(self.times, list(self.times)[1:]):
             buckets[min(9, int((b - a) * 1000 // 60))] += 1
+        top = sorted(self.counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
         return {"ok": True, "kpm": len(recent), "total": self.total,
                 "window": len(self.times), "rhythm": buckets,
-                "top": self.counts.most_common(5)}
+                "top": top}
 
 
 # ---------------------------------------------------------------- controller
@@ -402,6 +403,7 @@ class Controller:
             "rooms": [{"id": k, "name": v["desc"]} for k, v in ROOMS.items()],
             "devices": sorted(self.devices, key=lambda n: -self.devices[n]),
             "user_dir": USER_DIR,
+            "backend": "spawn",
             "stream": self.player.stream_ok,
         }
 
@@ -478,7 +480,9 @@ class Controller:
             if cmd == "room":
                 return {"ok": True, "room": self.room.set(str(msg.get("value", "none")))}
             if cmd == "stats":
-                return self.stats.report(time.monotonic())
+                r = self.stats.report(time.monotonic())
+                r["devices"] = sorted(self.devices, key=lambda n: -self.devices[n])
+                return r
             if cmd == "status":
                 return self.status()
             if cmd == "theme":
@@ -527,7 +531,7 @@ class InputReader:
             if p in open_paths:
                 continue
             try:
-                fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)
+                fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
                 self.fds[fd] = p
                 self.names[fd] = self.device_name(fd)
             except PermissionError:
@@ -713,6 +717,10 @@ def main(argv):
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
 
+    # Scan once before hello so `denied` reflects /dev/input access, not the
+    # default False from before any open has been attempted.
+    inputs.scan(time.monotonic())
+
     # When stdin is a pipe (spawned by omarchy-shell) it doubles as the control
     # channel: JSON lines in on stdin, replies and events out on stdout. EOF on
     # stdin means the shell is gone, so we exit with it.
@@ -736,6 +744,8 @@ def main(argv):
         for msg in msgs:
             resp = ctl.handle(msg)
             resp["id"] = msg.get("id")
+            if msg.get("cmd") == "status":
+                resp["denied"] = inputs.denied
             chan.send(resp)
             if resp.get("evt") == "theme":
                 emit({"evt": "theme", "slug": resp["slug"]})
@@ -744,6 +754,7 @@ def main(argv):
 
     while running:
         now = time.monotonic()
+        player.reap()
         inputs.scan(now)
         rl = list(inputs.fds) + [server.srv]
         if server.client:

@@ -202,6 +202,10 @@ class ControllerTest(unittest.TestCase):
         self.assertTrue(0.8 < v[3] < 1.0)
         self.assertEqual(self.ctl.handle({"cmd": "stats"})["total"], 4)
         self.assertEqual(self.ctl.handle({"cmd": "stats"})["top"][0][1], 1)
+        self.ctl.play(30, 12.0, True, "AT Translated Set 2 keyboard")
+        st = self.ctl.handle({"cmd": "stats"})
+        self.assertEqual(st["devices"], ["AT Translated Set 2 keyboard"])
+        self.assertEqual(st["top"][0], (30, 2))
 
     def test_room_and_theme_commands(self):
         started = []
@@ -285,6 +289,8 @@ class SocketRoundTripTest(unittest.TestCase):
             hello = json.loads(f.readline())
             self.assertEqual(hello["evt"], "hello")
             self.assertEqual(hello["pack"], "mx-blue")
+            self.assertIn("denied", hello)
+            self.assertIsInstance(hello["denied"], bool)
 
             def rpc(obj):
                 f.write((json.dumps(obj) + "\n").encode())
@@ -336,7 +342,13 @@ class SocketRoundTripTest(unittest.TestCase):
 
             self.assertEqual(rpc({"cmd": "ping", "t": 7, "id": 3}), {"ok": True, "pong": 7, "id": 3})
             self.assertTrue(rpc({"cmd": "mute", "toggle": True})["muted"])
-            self.assertTrue(rpc({"cmd": "status"})["muted"])
+            st = rpc({"cmd": "status"})
+            self.assertTrue(st["muted"])
+            self.assertIn("denied", st)
+            self.assertIn(st.get("backend"), ("spawn", "inprocess"))
+            stats = rpc({"cmd": "stats"})
+            self.assertIn("devices", stats)
+            self.assertIsInstance(stats["devices"], list)
             self.assertTrue(rpc({"cmd": "quit"})["quit"])
             self.assertEqual(p.wait(timeout=3), 0)
             self.assertEqual(p.stderr.read().decode(), "")
