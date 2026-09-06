@@ -147,14 +147,7 @@ impl Controller {
     }
 
     fn velocity_gain(&self, now: Instant) -> f32 {
-        if !self.velocity { return 1.0; }
-        match self.last_press {
-            None => 1.0,
-            Some(t) => {
-                let dt = now.duration_since(t).as_secs_f32();
-                0.8 + 0.2 * ((0.5 - dt) / 0.4).clamp(0.0, 1.0)
-            }
-        }
+        velocity_gain(self.velocity, self.last_press.map(|t| now.duration_since(t).as_secs_f32()))
     }
 
     /// Returns the latency in ms from `t0` to the sample being handed to the backend.
@@ -176,8 +169,9 @@ impl Controller {
             if !self.release_on { return None; }
             volume *= RELEASE_GAIN;
         }
+        let pan = pack.pan_for(code);
         let path = pack.sample_for(code, down)?;
-        self.player.play(path, volume);
+        self.player.play(path, volume, pan);
         Some((Instant::now().duration_since(t0).as_secs_f64() * 1000.0 * 100.0).round() / 100.0)
     }
 
@@ -284,8 +278,9 @@ fn main() {
         pfds.push(pollfd(server.listener.as_raw_fd())); roles.push(Role::Listener);
         if let Some(c) = server.client_fd() { pfds.push(pollfd(c)); roles.push(Role::Client); }
         if let Some(p) = pipe.as_ref() { pfds.push(pollfd(p.rfd)); roles.push(Role::Pipe); }
-        let n = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, (RESCAN_S * 1000.0) as i32) };
+        let n = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, ctl.player.poll_timeout_ms()) };
         if n < 0 { continue; }
+        ctl.player.tick();
         let now = Instant::now();
         let now_ms = ctl.now_s() * 1000.0;
         for (i, pfd) in pfds.iter().enumerate() {
@@ -355,6 +350,14 @@ fn main() {
 
 enum Role { Input(RawFd), Listener, Client, Pipe }
 
+fn velocity_gain(enabled: bool, dt_s: Option<f32>) -> f32 {
+    if !enabled { return 1.0; }
+    match dt_s {
+        None => 1.0,
+        Some(dt) => 0.8 + 0.2 * ((0.5 - dt) / 0.4).clamp(0.0, 1.0),
+    }
+}
+
 fn pollfd(fd: RawFd) -> libc::pollfd { libc::pollfd { fd, events: libc::POLLIN, revents: 0 } }
 
 fn emit(server: &mut ipc::CtlServer, pipe: &mut Option<ipc::LineChannel>, v: &Value) {
@@ -368,3 +371,27 @@ fn stop_requested() -> bool { STOP.load(std::sync::atomic::Ordering::SeqCst) }
 
 #[allow(dead_code)]
 fn _unused(_: Duration, _: &UnixListener) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debounce_same_key_only() {
+        let mut k = KeyFilter { last: HashMap::new() };
+        assert!(k.on_press(30, 0.0));
+        assert!(!k.on_press(30, 10.0));
+        assert!(k.on_press(31, 11.0));
+        assert!(k.on_press(30, 31.0));
+    }
+
+    #[test]
+    fn velocity_full_when_fast_relaxed_when_slow() {
+        assert_eq!(velocity_gain(false, Some(0.05)), 1.0);
+        assert_eq!(velocity_gain(true, None), 1.0);
+        assert!((velocity_gain(true, Some(0.05)) - 1.0).abs() < 1e-5);
+        assert!((velocity_gain(true, Some(0.95)) - 0.8).abs() < 1e-5);
+        let mid = velocity_gain(true, Some(0.30));
+        assert!(mid > 0.8 && mid < 1.0);
+    }
+}

@@ -21,13 +21,18 @@ const IDLE_S: f64 = 2.5;
 
 pub trait Player {
     fn name(&self) -> &'static str;
-    fn play(&mut self, path: &Path, volume: f32);
+    fn play(&mut self, path: &Path, volume: f32, pan: f32);
     fn preload(&mut self, _pack: &Pack) {}
     fn set_muted(&mut self, m: bool);
     fn muted(&self) -> bool;
     fn set_target(&mut self, target: Option<String>);
     fn stream_ok(&self) -> bool;
     fn shutdown(&mut self) {}
+    /// Called from the main poll loop. In-process backend uses this to put the
+    /// PipeWire stream to sleep; spawn backend is a no-op.
+    fn tick(&mut self) {}
+    /// Poll timeout in ms. Shorter while the stream is active so idle-sleep is prompt.
+    fn poll_timeout_ms(&self) -> i32 { 3000 }
 }
 
 // ------------------------------------------------------------------ spawn
@@ -45,7 +50,7 @@ impl SpawnPlayer {
 
 impl Player for SpawnPlayer {
     fn name(&self) -> &'static str { "spawn" }
-    fn play(&mut self, path: &Path, volume: f32) {
+    fn play(&mut self, path: &Path, volume: f32, _pan: f32) {
         let g = if self.muted { 0.0 } else { volume.clamp(0.0, 1.0) };
         if g == 0.0 { return; }
         self.live.retain_mut(|c| c.try_wait().ok().flatten().is_none());
@@ -113,7 +118,7 @@ fn decode(path: &Path) -> Option<Arc<Vec<f32>>> {
 
 // ------------------------------------------------------------------ in-process
 
-struct Voice { data: Arc<Vec<f32>>, pos: usize, gain: f32 }
+struct Voice { data: Arc<Vec<f32>>, pos: usize, gain: f32, pan: f32 }
 
 pub struct Mix {
     voices: Vec<Voice>,
@@ -121,7 +126,7 @@ pub struct Mix {
     active: bool,          // stream currently active (set from the PipeWire thread)
 }
 
-enum Msg { Wake, Reconnect(Option<String>), Quit }
+enum Msg { Wake, Sleep, Reconnect(Option<String>), Quit }
 
 pub struct InProcessPlayer {
     muted: bool,
@@ -163,18 +168,30 @@ impl InProcessPlayer {
 impl Player for InProcessPlayer {
     fn name(&self) -> &'static str { "inprocess" }
 
-    fn play(&mut self, path: &Path, volume: f32) {
+    fn play(&mut self, path: &Path, volume: f32, pan: f32) {
         let g = if self.muted { 0.0 } else { volume.clamp(0.0, 1.0) };
         if g == 0.0 { return; }
         let data = match self.sample(path) { Some(d) => d, None => return };
         let need_wake = {
             let mut m = self.mix.lock().unwrap();
             if m.voices.len() >= MAX_CONCURRENT { m.voices.remove(0); }
-            m.voices.push(Voice { data, pos: 0, gain: g });
+            m.voices.push(Voice { data, pos: 0, gain: g, pan });
             m.last_activity = Instant::now();
             !m.active
         };
         if need_wake { let _ = self.tx.send(Msg::Wake); }
+    }
+
+    fn tick(&mut self) {
+        let sleep = {
+            let m = self.mix.lock().unwrap();
+            m.active && m.voices.is_empty() && m.last_activity.elapsed().as_secs_f64() > IDLE_S
+        };
+        if sleep { let _ = self.tx.send(Msg::Sleep); }
+    }
+
+    fn poll_timeout_ms(&self) -> i32 {
+        if self.mix.lock().unwrap().active { 500 } else { 3000 }
     }
 
     fn preload(&mut self, pack: &Pack) {
@@ -276,7 +293,19 @@ fn make_stream(core: &pipewire::core::CoreRc, mix: Arc<Mutex<Mix>>, target: &Opt
                         for voice in m.voices.iter_mut() {
                             let src = &voice.data[voice.pos..];
                             let take = src.len().min(n * 2);
-                            for i in 0..take { out[i] += src[i] * voice.gain; }
+                            if voice.pan.abs() < 1e-4 {
+                                for i in 0..take { out[i] += src[i] * voice.gain; }
+                            } else {
+                                // Equal-power stereo pan, same law as tools/build_sounds.py.
+                                let gl = (((1.0 - voice.pan) / 2.0).max(0.0).sqrt() * 1.15) * voice.gain;
+                                let gr = (((1.0 + voice.pan) / 2.0).max(0.0).sqrt() * 1.15) * voice.gain;
+                                let mut i = 0;
+                                while i + 1 < take {
+                                    out[i] += src[i] * gl;
+                                    out[i + 1] += src[i + 1] * gr;
+                                    i += 2;
+                                }
+                            }
                             voice.pos += take;
                         }
                         m.voices.retain(|v| v.pos < v.data.len());
@@ -317,18 +346,6 @@ fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
     }
     let _ = ready.send(Ok(()));
 
-    // Idle timer: deactivate the stream once nothing has played for IDLE_S.
-    let mix_t = mix.clone();
-    let state_t = state.clone();
-    let timer = mainloop.loop_().add_timer(move |_| {
-        let mut m = mix_t.lock().unwrap();
-        if m.active && m.voices.is_empty() && m.last_activity.elapsed().as_secs_f64() > IDLE_S {
-            if let Some(s) = state_t.borrow().as_ref() { let _ = s.stream.set_active(false); }
-            m.active = false;
-        }
-    });
-    let _ = timer.update_timer(Some(Duration::from_millis(500)), Some(Duration::from_millis(500)));
-
     let ml = mainloop.clone();
     let core2 = core.clone();
     let mix_r = mix.clone();
@@ -340,6 +357,13 @@ fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
             if !m.active {
                 if let Some(s) = state_r.borrow().as_ref() { let _ = s.stream.set_active(true); }
                 m.active = true;
+            }
+        }
+        Msg::Sleep => {
+            let mut m = mix_r.lock().unwrap();
+            if m.active && m.voices.is_empty() && m.last_activity.elapsed().as_secs_f64() > IDLE_S {
+                if let Some(s) = state_r.borrow().as_ref() { let _ = s.stream.set_active(false); }
+                m.active = false;
             }
         }
         Msg::Reconnect(target) => {

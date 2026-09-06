@@ -39,3 +39,43 @@ impl Stats {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kpm_is_presses_in_last_minute() {
+        let mut s = Stats::new();
+        s.press(30, 0.0);
+        s.press(31, 10.0);
+        s.press(32, 70.0);
+        let r = s.report(70.0);
+        assert_eq!(r["kpm"], 2); // 10s and 70s, not 0s
+        assert_eq!(r["total"], 3);
+        assert_eq!(r["window"], 3);
+    }
+
+    #[test]
+    fn rhythm_buckets_are_60ms_and_top_breaks_ties_by_keycode() {
+        let mut s = Stats::new();
+        s.press(32, 0.00);
+        s.press(30, 0.05);  // 50 ms -> bucket 0
+        s.press(30, 0.20);  // 150 ms -> bucket 2
+        let r = s.report(0.20);
+        let rhythm = r["rhythm"].as_array().unwrap();
+        assert_eq!(rhythm[0], 1);
+        assert_eq!(rhythm[2], 1);
+        let top = r["top"].as_array().unwrap();
+        assert_eq!(top[0], json!([30, 2]));
+        assert_eq!(top[1], json!([32, 1]));
+    }
+
+    #[test]
+    fn drops_presses_older_than_five_minutes() {
+        let mut s = Stats::new();
+        s.press(30, 0.0);
+        s.press(31, 301.0);
+        assert_eq!(s.report(301.0)["window"], 1);
+    }
+}
