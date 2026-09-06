@@ -20,7 +20,8 @@ right-click toggles, the wheel nudges keyboard volume. The panel has:
 - mouse clicks with their own pack and volume
 - quiet: mute while any app records the microphone, and quiet hours
 - ignored apps by Wayland app id
-- a typing card (keys per minute, rhythm, top keys) and a latency chart
+- a typing card (keys per minute, rhythm, top keys) and a latency chart, on a More page
+- a compact four-page panel (Keys / Mouse / Quiet / More) that fits a 1200px screen without scrolling
 - theme binding: pick a pack per Omarchy theme, switched by a theme-set hook
 - import of any Mechvibes or MechvibesDX pack into your own packs folder
 
