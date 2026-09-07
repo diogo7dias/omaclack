@@ -34,39 +34,19 @@ TYPETONE = "https://github.com/phuclh/omarchy-typetone"
 # MechvibesDX "single" packs: one sprite, per-key press AND release timings.
 DX_PACKS = [
     ("cherrymx-blue-abs", "mx-blue", "Cherry MX Blue"),
-    ("cherrymx-blue-pbt", "mx-blue-pbt", "Cherry MX Blue, PBT caps"),
     ("cherrymx-brown-abs", "mx-brown", "Cherry MX Brown"),
-    ("cherrymx-brown-pbt", "mx-brown-pbt", "Cherry MX Brown, PBT caps"),
     ("cherrymx-red-abs", "mx-red", "Cherry MX Red"),
-    ("cherrymx-black-abs", "mx-black", "Cherry MX Black"),
-    ("cherrymx-black-pbt", "mx-black-pbt", "Cherry MX Black, PBT caps"),
-    ("topre-purple-hybrid-pbt", "topre", "Topre"),
-    ("eg-oreo", "eg-oreo", "Everglide Oreo"),
-    ("eg-crystal-purple", "eg-crystal-purple", "Everglide Crystal Purple"),
 ]
-# Old Mechvibes "single" packs with press only; release is derived from the press.
-MV_PACKS = [
-    ("cherrymx-red-pbt", "mx-red-pbt", "Cherry MX Red, PBT caps"),
-]
-# Old Mechvibes "multi" pack: one WAV per key, press only.
-MV_MULTI_PACKS = [
-    ("nk-cream", "nk-cream", "Novelkeys Cream"),
-]
+# Old Mechvibes packs (press only, release derived): none shipped any more.
+MV_PACKS = []
+MV_MULTI_PACKS = []
 # kbsim: five row samples + space/enter/backspace, press and release.
 KB_PACKS = [
     ("holypanda", "holy-panda", "Holy Panda"),
     ("buckling", "buckling-spring", "Buckling Spring"),
     ("boxnavy", "box-navy", "Kailh Box Navy"),
-    ("bluealps", "alps-blue", "Alps Blue"),
-    ("alpaca", "alpaca", "Alpaca"),
-    ("blackink", "ink-black", "Gateron Ink Black"),
-    ("redink", "ink-red", "Gateron Ink Red"),
-    ("cream", "nk-cream-kbsim", "Novelkeys Cream, kbsim"),
-    ("mxblack", "mx-black-kbsim", "Cherry MX Black, kbsim"),
-    ("mxblue", "mx-blue-kbsim", "Cherry MX Blue, kbsim"),
-    ("mxbrown", "mx-brown-kbsim", "Cherry MX Brown, kbsim"),
-    ("topre", "topre-kbsim", "Topre, kbsim"),
-    ("turquoise", "turquoise", "Tecsee Turquoise"),
+    ("cream", "nk-cream", "Novelkeys Cream"),
+    ("topre", "topre", "Topre"),
 ]
 # Typetone mouse renders: press at ~0-20 ms, release ~100 ms later, then a
 # second click we drop. `split` is where press ends and release begins.
@@ -75,16 +55,9 @@ TT_MOUSE = [
     ("razer", "razer", "Razer", "Katsuhira, Freesound 555394 (CC0) via Typetone", 0.075, 0.160),
     ("crisp", "crisp", "Crisp", "Six Ways, Freesound 223445 (CC0) via Typetone", 0.060, 0.135),
     ("soft", "soft", "Soft", "Breviceps, Freesound 447938 (CC0) via Typetone", 0.075, 0.175),
-    ("deep", "deep", "Deep", "Breviceps, Freesound 447938 (CC0) via Typetone", 0.090, 0.200),
-    ("studio", "studio", "Studio", "1j01, OpenGameArt middle click (CC0) via Typetone", 0.040, 0.075),
 ]
-# MechvibesDX mouse packs: sprite with press/release timings.
-DX_MOUSE = [
-    ("wooden", "wooden", "Wooden"),
-    ("ping", "ping", "Ping"),
-    ("chat", "chat", "Chat"),
-    ("vibrate", "vibrate", "Vibrate"),
-]
+# MechvibesDX mouse packs: none shipped (they are effects, not mouse clicks).
+DX_MOUSE = []
 
 # ------------------------------------------------------------------ key maps
 

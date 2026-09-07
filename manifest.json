@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.diogo7dias.omaclack",
   "name": "Omaclack",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Diogo M.",
   "license": "MIT",
-  "description": "Mechanical keyboard typing sounds for Omarchy. Runs only on this machine: no network, no logs, no keystrokes saved.",
+  "description": "Mechanical keyboard and mouse click sounds for Omarchy. Eight switch packs, four mouse packs. Runs only on this machine: no network, no logs, no keystrokes saved.",
   "kinds": ["service", "bar-widget"],
   "keepLoaded": true,
   "entryPoints": {
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Omaclack",
-    "description": "Keyboard sound toggle, pack picker, volume",
+    "description": "Typing and click sounds: toggle, packs, volume, quiet hours",
     "category": "Utilities",
     "allowMultiple": false,
     "defaultSection": "right"

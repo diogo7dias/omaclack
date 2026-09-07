@@ -1,30 +1,28 @@
 # Omaclack
 
 Mechanical keyboard and mouse click sounds for [Omarchy](https://omarchy.org)
-(Quattro shell). 25 keyboard packs and 10 mouse packs cut from real switch
-recordings, press and release for every key, panned by key position. The
-default Rust daemon mixes into one PipeWire stream; other CPUs fall back to
-one `pw-play` per event. Everything stays on this machine: no network, no
-logging, no keystrokes written to disk. About 4 MB installed.
+(Quattro shell). Eight keyboard packs and four mouse packs cut from real
+switch and button recordings, press and release for every key, panned by key
+position. The default Rust daemon mixes into one PipeWire stream; other CPUs
+fall back to one `pw-play` per event. Everything stays on this machine: no
+network, no logging, no keystrokes written to disk. About 4 MB installed.
 
 ```bash
 omarchy plugin add https://github.com/diogo7dias/omaclack.git --enable
 ```
 
-Bar widget with a keycap-and-waveform glyph. Left-click opens the panel,
-right-click toggles, the wheel nudges keyboard volume. The panel has:
+Bar widget with the same Nerd Font keyboard glyph style as the shell's own
+icons; it dims while sound is off or muted. Left-click opens the panel,
+right-click toggles, the wheel nudges keyboard volume. The panel is one page:
 
-- keyboard volume and pack, with a hint for the keyboard you are actually typing on
-- feel: velocity (louder when you type fast), release sounds, and room presets
-  (on the desk, deep tray, wooden desk, through a wall) rendered live by a
-  PipeWire filter chain
-- mouse clicks with their own pack and volume
-- quiet: mute while any app records the microphone, and quiet hours
-- ignored apps by Wayland app id
-- a typing card (keys per minute, rhythm, top keys) and a latency chart, on a More page
-- a compact four-page panel (Keys / Mouse / Quiet / More) that fits a 1200px screen without scrolling
-- theme binding: pick a pack per Omarchy theme, switched by a theme-set hook
-- import of any Mechvibes or MechvibesDX pack into your own packs folder
+- keyboard: volume, pack, velocity (louder when you type fast), release
+  sounds, and a room preset (desk, tray, wooden desk, through a wall)
+  rendered live by a PipeWire filter chain, plus a hint for the keyboard you
+  are actually typing on
+- mouse: on/off, pack and volume of its own
+- quiet: mute while any app records the microphone, quiet hours, and apps to
+  ignore by Wayland app id
+- your own packs: import any Mechvibes or MechvibesDX pack into the packs folder
 
 ## Install
 
@@ -155,7 +153,7 @@ Daemon-initiated events: `{"evt": "hello", ...status, "denied": bool}` on
 connect (status includes `packs`, `mouse_packs`, `rooms`, `devices`),
 `{"evt": "key", "latency_ms": 0.4}` per sounded press on the parent pipe
 only (no keycode; the control socket is not a keystream),
-`{"evt": "theme", "slug": ...}` after the theme hook.
+`{"evt": "theme", "slug": ...}` after a `theme` command (the panel ignores both events).
 Latency is measured from the evdev read to the sample being handed to PipeWire.
 
 Try it by hand:
@@ -188,31 +186,30 @@ tools/omaclack-import ~/Downloads/clicks --mouse --name "My mouse"  # mouse
 
 Then click "rescan packs" in the panel. Needs `ffmpeg`.
 
-### Keyboard packs (25)
+### Keyboard packs (8)
 
 | pack | name | source |
 |---|---|---|
-| `mx-blue`, `mx-blue-pbt`, `mx-brown`, `mx-brown-pbt`, `mx-red`, `mx-black`, `mx-black-pbt` | Cherry MX Blue/Brown/Red/Black, ABS and PBT caps | [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx), per key, press + release |
-| `topre`, `eg-oreo`, `eg-crystal-purple` | Topre, Everglide Oreo, Everglide Crystal Purple | MechvibesDX, per key, press + release |
-| `mx-red-pbt`, `nk-cream` | Cherry MX Red PBT, Novelkeys Cream | [Mechvibes](https://github.com/hainguyents13/mechvibes), per key, release derived |
-| `holy-panda`, `buckling-spring`, `box-navy`, `alps-blue`, `alpaca`, `ink-black`, `ink-red`, `nk-cream-kbsim`, `mx-black-kbsim`, `mx-blue-kbsim`, `mx-brown-kbsim`, `topre-kbsim`, `turquoise` | Holy Panda, Buckling Spring, Kailh Box Navy, Alps Blue, Alpaca, Gateron Ink Black/Red, NK Cream, Cherry MX Black/Blue/Brown, Topre, Tecsee Turquoise | [kbsim](https://github.com/tplai/kbsim), five row samples + space/enter/backspace, panned at playback |
+| `mx-blue`, `mx-brown`, `mx-red` | Cherry MX Blue, Brown, Red | [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx), per key, press + release |
+| `holy-panda`, `buckling-spring`, `box-navy`, `nk-cream`, `topre` | Holy Panda, Buckling Spring, Kailh Box Navy, Novelkeys Cream, Topre | [kbsim](https://github.com/tplai/kbsim), five row samples + space/enter/backspace, panned at playback |
 
-"Release derived" means no release was recorded, so the release is a short,
-quieter, slightly higher copy of the press. The panel says so under the chips.
+Every shipped pack has a recorded release. Quality over quantity: one clicky,
+one tactile and one linear Cherry, then the four boards people actually ask
+for by name.
 
-### Mouse packs (10)
+### Mouse packs (4)
 
 | pack | recording |
 |---|---|
 | `logitech` | OwlStorm, [Freesound 320146](https://freesound.org/s/320146/), CC0, via Typetone |
 | `razer` | Katsuhira, [Freesound 555394](https://freesound.org/s/555394/), CC0, via Typetone |
 | `crisp` | Six Ways, [Freesound 223445](https://freesound.org/s/223445/), CC0, via Typetone |
-| `soft`, `deep` | Breviceps, [Freesound 447938](https://freesound.org/s/447938/), CC0, via Typetone |
-| `studio` | 1j01, [OpenGameArt middle click](https://opengameart.org/content/middle-mouse-click), CC0, via Typetone |
-| `wooden`, `ping`, `chat`, `vibrate` | MechvibesDX mouse packs, MIT |
+| `soft` | Breviceps, [Freesound 447938](https://freesound.org/s/447938/), CC0, via Typetone |
 
 Each mouse sample is split into the press and its release so one physical
-click is one sound.
+click is one sound. Only real button recordings ship; the effect-style packs
+(ping, chat, vibrate, wooden) were dropped because they do not sound like a
+mouse.
 
 Rebuild everything from upstream checkouts with
 `tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>` (needs
@@ -221,17 +218,15 @@ libsndfile because that is what `pw-play` decodes with).
 
 ## Credits
 
-- **Mechvibes** and **MechvibesDX** by [hainguyents13](https://github.com/hainguyents13),
-  MIT. The Cherry MX, Topre, Everglide and NK Cream packs are sliced from their
-  sprites using MechvibesDX's press/release timings; the wooden, ping, chat and
-  vibrate mouse packs are MechvibesDX's.
-- **kbsim** by [Thomas Lai](https://github.com/tplai/kbsim), MIT. Thirteen
-  packs are its `press/` and `release/` samples.
+- **MechvibesDX** by [hainguyents13](https://github.com/hainguyents13), MIT.
+  The Cherry MX packs are sliced from its sprites using its press/release timings.
+- **kbsim** by [Thomas Lai](https://github.com/tplai/kbsim), MIT. Five packs
+  are its `press/` and `release/` samples.
 - **Omarchy Typetone** by [phuclh](https://github.com/phuclh/omarchy-typetone),
   MIT. The mouse packs are its `mouse-sounds/` renders of CC0 Freesound
   recordings by OwlStorm, Katsuhira and Six Ways.
 
-Both licenses are reproduced in `sounds/LICENSES.md`.
+All three licenses are reproduced in `sounds/LICENSES.md`.
 
 ## Development
 
@@ -242,7 +237,6 @@ cd daemon && cargo test                          # packs, velocity, stats, evdev
 tools/bench_daemon.py rust bin/omaclackd-x86_64  # startup, footprint, key-to-sound onset
 tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>   # re-import all packs (ffmpeg)
 tools/omaclack-import <folder-or-zip> [--mouse]  # add a pack to ~/.config/omarchy/omaclack/packs
-tools/omaclack-theme-hook <slug>                 # what the Omarchy theme-set hook runs
 tools/dev-reload                                 # nudge the shell when the plugin dir is a symlink
 ```
 
@@ -282,13 +276,6 @@ Build: `cd daemon && cargo build --release && cp target/release/omaclackd
 ../bin/omaclackd-x86_64`. Needs libpipewire and libsndfile headers. The
 committed binary is for x86_64; other CPUs fall back to Python automatically.
 
-## Theme hook
-
-The panel's "theme hook not installed" chip runs
-`omarchy hook install theme-set tools/omaclack-theme-hook`. After that every
-theme change plays a key and the panel offers "use this pack for theme X";
-bound themes switch packs automatically. Bindings live in `omaclack.json`.
-
 ## Privacy
 
 Omaclack never leaves this computer. There is no account, no telemetry, no
@@ -301,8 +288,8 @@ What happens to a key:
 | step | what |
 |---|---|
 | Read | Linux keycode from `/dev/input/event*` (or a mouse button). Not the character, not a keymap. |
-| Used for | picking `sounds/<pack>/<code>.opus` and, for five minutes, an in-memory count on the More page. |
-| Written | never. Settings in `~/.config/omarchy/omaclack.json` are pack names, volumes, quiet hours, ignore-list app ids, theme bindings. No keystrokes. |
+| Used for | picking `sounds/<pack>/<code>.opus`. The daemon also keeps a five-minute in-memory count for its `stats` command; the panel no longer shows it. |
+| Written | never. Settings in `~/.config/omarchy/omaclack.json` are pack names, volumes, quiet hours, ignore-list app ids. No keystrokes. |
 | Sent off-machine | never. |
 | Sent on-machine | latency of that press, no keycode, over the parent pipe to omarchy-shell. The control socket (`0600`, directory `0700` when it is `$XDG_RUNTIME_DIR/omaclack`) does not stream keys. |
 

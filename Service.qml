@@ -39,7 +39,6 @@ Item {
   property string quietFrom: "22:00"
   property string quietTo: "07:00"
   property int quietPercent: 40      // volume scale inside quiet hours
-  property var themePacks: ({})      // Omarchy theme slug -> pack id
 
   // ---- daemon state (live) ----
   property var packs: []             // [{id, name, credit, source, release, user}]
@@ -50,17 +49,6 @@ Item {
   property bool daemonRunning: false
   property bool inputDenied: false   // daemon could not open /dev/input (not in `input` group)
   property bool streamOk: false
-  property var lastEvent: null
-  property var latencies: []         // last 50 ms values, newest last
-  property var stats: ({ kpm: 0, total: 0, window: 0, rhythm: [], top: [] })
-  property string lastTheme: ""
-  readonly property real lastLatency: latencies.length ? latencies[latencies.length - 1] : 0
-  readonly property real avgLatency: {
-    if (!latencies.length) return 0
-    var s = 0
-    for (var i = 0; i < latencies.length; i++) s += latencies[i]
-    return s / latencies.length
-  }
 
   function metaFor(list, id) {
     for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i]
@@ -174,16 +162,7 @@ Item {
     save()
   }
   function denylistText() { return denylist.join(", ") }
-  function bindThemePack(slug, pack) {
-    var next = ({})
-    for (var k in themePacks) next[k] = themePacks[k]
-    if (pack) next[slug] = pack; else delete next[slug]
-    themePacks = next
-    save()
-  }
   function preview(key) { send({ cmd: "play", key: key === undefined ? 30 : key }) }
-  function ping() { send({ cmd: "ping", t: Date.now() }) }
-  function requestStats() { send({ cmd: "stats" }) }
   function refreshPacks() {
     send({ cmd: "status" })
     // Force the daemon to drop cached samples so a replaced pack on disk is heard.
@@ -197,7 +176,7 @@ Item {
     var n = mainDevice.toLowerCase()
     if (!n) return null
     var rules = [
-      [/at translated set 2|apple internal|thinkpad|laptop/, "mx-red-pbt", "laptop keyboard: try a quiet linear"],
+      [/at translated set 2|apple internal|thinkpad|laptop/, "mx-red", "laptop keyboard: try a quiet linear"],
       [/hhkb|realforce|topre|leopold fc660c/, "topre", "Topre board detected"],
       [/model m|unicomp/, "buckling-spring", "buckling spring board detected"],
       [/keychron|nuphy|ducky|glorious|wooting|varmilo|akko|leopold|drop|corsair|razer|logitech g|steelseries|hyperx|epomaker|royal kludge|rk/, "mx-brown", "mechanical board detected"],
@@ -238,7 +217,6 @@ Item {
       if (typeof c.quietTo === "string") quietTo = c.quietTo
       if (typeof c.quietPercent === "number") quietPercent = Math.max(0, Math.min(100, Math.round(c.quietPercent)))
       if (Array.isArray(c.denylist)) denylist = c.denylist.map(function(s) { return String(s).toLowerCase() })
-      if (c.themePacks && typeof c.themePacks === "object") themePacks = c.themePacks
     } catch (e) { /* corrupt file: keep defaults, overwrite on next save */ }
     configLoaded = true
     inQuietHours = computeQuiet()
@@ -255,7 +233,7 @@ Item {
       version: 2, enabled: enabled, volume: volume, pack: currentPack, mouse: mouseEnabled,
       mousePack: mousePack, mouseVolume: mouseVolume, velocity: velocity, release: releaseSounds,
       room: room, muteInMeetings: muteInMeetings, quietHours: quietHours, quietFrom: quietFrom,
-      quietTo: quietTo, quietPercent: quietPercent, denylist: denylist, themePacks: themePacks
+      quietTo: quietTo, quietPercent: quietPercent, denylist: denylist
     }, null, 2) + "\n")
   }
 
@@ -311,21 +289,9 @@ Item {
     var msg
     try { msg = JSON.parse(line) } catch (e) { return }
     if (!msg) return
-    if (msg.evt === "key") {
-      lastEvent = { latency_ms: msg.latency_ms }
-      pushLatency(msg.latency_ms)
-      return
-    }
-    if (msg.evt === "theme") {
-      lastTheme = String(msg.slug || "")
-      var p = themePacks[lastTheme]
-      if (p && metaFor(packs, p)) setPack(p)
-      return
-    }
-    if (msg.pong !== undefined && msg.pong !== null) pushLatency(Date.now() - Number(msg.pong))
+    if (msg.evt === "key" || msg.evt === "theme") return
     if (typeof msg.denied === "boolean") inputDenied = msg.denied
     if (Array.isArray(msg.devices)) devices = msg.devices
-    if (typeof msg.kpm === "number") { stats = msg; return }
     if (Array.isArray(msg.packs)) packs = msg.packs
     if (Array.isArray(msg.mouse_packs)) mousePacks = msg.mouse_packs
     if (Array.isArray(msg.rooms)) rooms = msg.rooms
@@ -344,14 +310,6 @@ Item {
         setPack(metaFor(packs, "mx-blue") ? "mx-blue" : packs[0].id)
       }
     }
-  }
-
-  function pushLatency(ms) {
-    var v = Number(ms)
-    if (isNaN(v)) return
-    var next = latencies.slice(Math.max(0, latencies.length - 49))
-    next.push(Math.round(v * 10) / 10)
-    latencies = next
   }
 
   Component.onDestruction: {

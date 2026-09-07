@@ -162,10 +162,10 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(st["pack"], "topre")
         ids = [p["id"] for p in st["packs"]]
         self.assertIn("mx-blue", ids)
-        self.assertEqual(st["packs"][ids.index("topre")]["credit"], "Mechvibes")
+        self.assertEqual(st["packs"][ids.index("topre")]["credit"], "kbsim by Thomas Lai")
         self.assertNotIn("mouse", ids)
         self.assertEqual([p["id"] for p in st["mouse_packs"]],
-                         ["chat", "crisp", "deep", "logitech", "ping", "razer", "soft", "studio", "vibrate", "wooden"])
+                         ["crisp", "logitech", "razer", "soft"])
         self.assertEqual(self.ctl.handle({"cmd": "mousepack", "pack": "razer"})["mouse_pack"], "razer")
         self.assertFalse(self.ctl.handle({"cmd": "mousepack", "pack": "nope"})["ok"])
         bad = self.ctl.handle({"cmd": "load", "pack": "nope"})
@@ -224,11 +224,8 @@ class ControllerTest(unittest.TestCase):
 
 
 class SoundPacksTest(unittest.TestCase):
-    PACKS = ["alpaca", "alps-blue", "box-navy", "buckling-spring", "eg-crystal-purple", "eg-oreo",
-             "holy-panda", "ink-black", "ink-red", "mx-black", "mx-black-kbsim", "mx-black-pbt",
-             "mx-blue", "mx-blue-kbsim", "mx-blue-pbt", "mx-brown", "mx-brown-kbsim", "mx-brown-pbt",
-             "mx-red", "mx-red-pbt", "nk-cream", "nk-cream-kbsim", "topre", "topre-kbsim", "turquoise"]
-    MOUSE = ["chat", "crisp", "deep", "logitech", "ping", "razer", "soft", "studio", "vibrate", "wooden"]
+    PACKS = ["box-navy", "buckling-spring", "holy-panda", "mx-blue", "mx-brown", "mx-red", "nk-cream", "topre"]
+    MOUSE = ["crisp", "logitech", "razer", "soft"]
 
     def test_every_pack_is_credited_opus_with_release(self):
         self.assertEqual(D.list_packs([SOUNDS]), self.PACKS)
