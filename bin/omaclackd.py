@@ -2,22 +2,18 @@
 """omaclackd: keyboard and mouse sound daemon for the Omaclack Omarchy plugin.
 
 Reads /dev/input/event* directly and spawns one short-lived `pw-play` per key
-press or release on a per-key Opus file. pw-play auto-connects to PipeWire,
-decodes via libsndfile and exits when the sample ends; nothing stays resident
-but this process sleeping in select() and, while a room preset is active, one
-`pipewire` filter-chain child that suspends when idle.
+press (and mouse button release) on a per-key Opus file. pw-play auto-connects
+to PipeWire, decodes via libsndfile and exits when the sample ends; nothing
+stays resident but this process sleeping in select().
 
-Stdlib only. No logging, no network, nothing written to disk except the
-generated room configs under $XDG_RUNTIME_DIR. Child of omarchy-shell; the
-stdin pipe is both the control channel and the lifeline.
+Stdlib only. No logging, no network, nothing written to disk. Child of
+omarchy-shell; the stdin pipe is both the control channel and the lifeline.
 """
 
 import collections
 import fcntl
 import json
-import math
 import os
-import random
 import select
 import signal
 import socket
@@ -25,7 +21,6 @@ import struct
 import subprocess
 import sys
 import time
-import wave
 
 # ---------------------------------------------------------------- constants
 
@@ -37,7 +32,7 @@ DEBOUNCE_MS = 30.0
 RESCAN_S = 3.0
 MAX_CONCURRENT = 24  # cap on simultaneous pw-play processes
 SAMPLE_EXT = (".opus", ".ogg", ".flac", ".wav")
-RELEASE_GAIN = 0.7   # release samples relative to the press volume
+RELEASE_GAIN = 0.7   # mouse release samples relative to the press volume
 STATS_WINDOW_S = 300.0
 
 INPUT_EVENT = struct.Struct("llHHi")
@@ -49,7 +44,6 @@ MOUSE_DIR = os.path.join(SOUNDS_DIR, "mouse")
 USER_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
                         "omarchy", "omaclack", "packs")
 USER_MOUSE_DIR = os.path.join(USER_DIR, "mouse")
-ROOM_SINK = "omaclack.room"
 
 
 def runtime_dir():
@@ -153,7 +147,6 @@ class OneShotPlayer:
 
     def __init__(self):
         self.muted = False
-        self.target = None      # PipeWire node name, set while a room is active
         self.live = []          # in-flight pw-play processes
         self.stream_ok = True   # last spawn attempt succeeded
 
@@ -167,10 +160,7 @@ class OneShotPlayer:
         self.reap()
         if len(self.live) >= MAX_CONCURRENT:
             return
-        cmd = ["pw-play", "--volume", "%.3f" % g]
-        if self.target:
-            cmd += ["--target", self.target]
-        self._spawn(cmd + [path])
+        self._spawn(["pw-play", "--volume", "%.3f" % g, path])
 
     def _spawn(self, cmd):
         try:
@@ -179,129 +169,6 @@ class OneShotPlayer:
             self.stream_ok = True
         except OSError:
             self.stream_ok = False
-
-
-# ---------------------------------------------------------------- rooms
-
-# Each preset: an impulse response synthesised at start (decay seconds,
-# early-reflection delays in ms, one-pole lowpass Hz, wet level) plus a
-# low shelf and lowpass in the filter chain in front of the convolver.
-ROOMS = {
-    "desk": dict(desc="On the desk", decay=0.022, refl=(1.3, 2.9), lp=9000, wet=0.35,
-                 shelf=(180.0, 1.5), cut=14000.0),
-    "tray": dict(desc="Deep aluminium tray", decay=0.055, refl=(2.1, 4.7, 7.9), lp=4200, wet=0.55,
-                 shelf=(140.0, 4.0), cut=6500.0),
-    "wood": dict(desc="Wooden desk", decay=0.040, refl=(3.0, 6.5, 11.0), lp=6000, wet=0.45,
-                 shelf=(200.0, 3.0), cut=9000.0),
-    "wall": dict(desc="Through a wall", decay=0.120, refl=(6.0, 13.0, 21.0, 34.0), lp=1100, wet=0.8,
-                 shelf=(120.0, 2.0), cut=1400.0),
-}
-
-
-def synth_ir(path, decay, refl, lp, wet, rate=48000):
-    """Direct spike + early reflections + decaying noise tail, one-pole lowpassed."""
-    rnd = random.Random(7)
-    n = int(rate * max(decay * 4, 0.03))
-    out = [0.0] * n
-    out[0] = 1.0
-    for i, ms in enumerate(refl):
-        k = int(rate * ms / 1000.0)
-        if k < n:
-            out[k] += 0.45 * wet / (i + 1)
-    for k in range(1, n):
-        out[k] += wet * 0.6 * rnd.uniform(-1, 1) * math.exp(-k / (rate * decay))
-    a = math.exp(-2 * math.pi * lp / rate)
-    y = 0.0
-    for k in range(n):
-        y = (1 - a) * out[k] + a * y
-        out[k] = y
-    peak = max(abs(v) for v in out) or 1.0
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(b"".join(struct.pack("<h", int(v / peak * 30000)) for v in out))
-
-
-ROOM_CONF = """context.properties = {{ log.level = 0 }}
-context.spa-libs = {{ audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }}
-context.modules = [
-  {{ name = libpipewire-module-protocol-native }}
-  {{ name = libpipewire-module-client-node }}
-  {{ name = libpipewire-module-adapter }}
-  {{ name = libpipewire-module-filter-chain
-    args = {{
-      node.description = "Omaclack room"
-      media.name = "Omaclack room"
-      filter.graph = {{
-        nodes = [
-          {{ type = builtin name = shelf label = bq_lowshelf control = {{ "Freq" = {shelf_f} "Q" = 0.8 "Gain" = {shelf_g} }} }}
-          {{ type = builtin name = cut label = bq_lowpass control = {{ "Freq" = {cut} "Q" = 0.7 }} }}
-          {{ type = builtin name = conv label = convolver config = {{ filename = "{ir}" gain = 1.0 }} }}
-        ]
-        links = [
-          {{ output = "shelf:Out" input = "cut:In" }}
-          {{ output = "cut:Out" input = "conv:In" }}
-        ]
-        inputs = [ "shelf:In" ]
-        outputs = [ "conv:Out" ]
-      }}
-      audio.channels = 2
-      audio.position = [ FL FR ]
-      capture.props = {{ node.name = "{sink}" media.class = Audio/Sink node.description = "Omaclack room" }}
-      playback.props = {{ node.name = "{sink}.out" node.passive = true }}
-    }}
-  }}
-]
-"""
-
-
-class Room:
-    """Owns the `pipewire -c` child that provides the room sink."""
-
-    def __init__(self, player):
-        self.player = player
-        self.name = "none"
-        self.proc = None
-
-    def set(self, name):
-        name = name if name in ROOMS else "none"
-        if name == self.name and (name == "none" or (self.proc and self.proc.poll() is None)):
-            return self.name
-        self.stop()
-        if name != "none":
-            self.start(name)
-        self.name = name
-        return name
-
-    def start(self, name):
-        r = ROOMS[name]
-        d = runtime_dir()
-        os.makedirs(d, mode=0o700, exist_ok=True)
-        ir = os.path.join(d, "room-%s.wav" % name)
-        conf = os.path.join(d, "room-%s.conf" % name)
-        if not os.path.exists(ir):
-            synth_ir(ir, r["decay"], r["refl"], r["lp"], r["wet"])
-        with open(conf, "w") as f:
-            f.write(ROOM_CONF.format(shelf_f=r["shelf"][0], shelf_g=r["shelf"][1], cut=r["cut"],
-                                     ir=ir, sink=ROOM_SINK))
-        try:
-            self.proc = subprocess.Popen(["pipewire", "-c", conf], stdin=subprocess.DEVNULL,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.player.target = ROOM_SINK
-        except OSError:
-            self.proc = None
-            self.player.target = None
-
-    def stop(self):
-        self.player.target = None
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-        self.proc = None
 
 
 # ---------------------------------------------------------------- key filtering
@@ -361,14 +228,12 @@ class Controller:
         self.player = player
         self.pack_roots = list(pack_roots)
         self.mouse_roots = list(mouse_roots)
-        self.room = Room(player)
         self.stats = Stats()
         self.pack = None
         self.mouse_pack = None
         self.mouse_enabled = True
         self.enabled = True
         self.velocity = True
-        self.release_on = True
         self.volume = 0.7        # keyboard
         self.mouse_volume = 0.7
         self.last_press = None
@@ -401,9 +266,6 @@ class Controller:
             "enabled": self.enabled,
             "mouse": self.mouse_enabled,
             "velocity": self.velocity,
-            "release": self.release_on,
-            "room": self.room.name,
-            "rooms": [{"id": k, "name": v["desc"]} for k, v in ROOMS.items()],
             "devices": sorted(self.devices, key=lambda n: -self.devices[n]),
             "user_dir": USER_DIR,
             "backend": "spawn",
@@ -422,21 +284,23 @@ class Controller:
             return None
         now = t0 if t0 is not None else time.monotonic()
         pack, volume = self.pack, self.volume
-        if code >= KEY_MAX_KEYBOARD:
+        is_mouse = code >= KEY_MAX_KEYBOARD
+        if is_mouse:
             if not self.mouse_enabled:
                 return None
             pack, volume = self.mouse_pack or pack, self.mouse_volume
         if pack is None:
             return None
         if down:
-            if code < KEY_MAX_KEYBOARD:
+            if not is_mouse:
                 volume *= self.velocity_gain(now)
                 self.last_press = now
                 self.stats.press(code, now)
                 if device:
                     self.devices[device] = self.devices.get(device, 0) + 1
         else:
-            if not self.release_on:
+            # Keys sound on press only; mouse buttons click on press and release.
+            if not is_mouse:
                 return None
             volume *= RELEASE_GAIN
         path = pack.sample_for(code, down)
@@ -477,11 +341,6 @@ class Controller:
             if cmd == "velocity":
                 self.velocity = bool(msg.get("value", True))
                 return {"ok": True, "velocity": self.velocity}
-            if cmd == "release":
-                self.release_on = bool(msg.get("value", True))
-                return {"ok": True, "release": self.release_on}
-            if cmd == "room":
-                return {"ok": True, "room": self.room.set(str(msg.get("value", "none")))}
             if cmd == "stats":
                 r = self.stats.report(time.monotonic())
                 r["devices"] = sorted(self.devices, key=lambda n: -self.devices[n])
@@ -499,9 +358,6 @@ class Controller:
             return {"ok": False, "error": "unknown cmd"}
         except (FileNotFoundError, ValueError) as e:
             return {"ok": False, "error": str(e)}
-
-    def close(self):
-        self.room.stop()
 
 
 def first_or_none(names, preferred):
@@ -808,7 +664,6 @@ def main(argv):
                         # socket must not be a live keystream.
                         emit_pipe({"evt": "key", "latency_ms": lat})
 
-    ctl.close()
     server.close()
     return 0
 

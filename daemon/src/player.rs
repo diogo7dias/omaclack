@@ -1,6 +1,6 @@
 //! Playback backends.
 //!
-//! SpawnPlayer: one `pw-play --volume g [--target t] file` per event, children
+//! SpawnPlayer: one `pw-play --volume g file` per event, children
 //! reaped on the next play. What the Python daemon did.
 //!
 //! InProcessPlayer: samples decoded once with libsndfile (the same decoder
@@ -25,7 +25,6 @@ pub trait Player {
     fn preload(&mut self, _pack: &Pack) {}
     fn set_muted(&mut self, m: bool);
     fn muted(&self) -> bool;
-    fn set_target(&mut self, target: Option<String>);
     fn stream_ok(&self) -> bool;
     fn shutdown(&mut self) {}
     /// Called from the main poll loop. In-process backend uses this to put the
@@ -39,13 +38,12 @@ pub trait Player {
 
 pub struct SpawnPlayer {
     muted: bool,
-    target: Option<String>,
     live: Vec<Child>,
     ok: bool,
 }
 
 impl SpawnPlayer {
-    pub fn new() -> Self { SpawnPlayer { muted: false, target: None, live: Vec::new(), ok: true } }
+    pub fn new() -> Self { SpawnPlayer { muted: false, live: Vec::new(), ok: true } }
 }
 
 impl Player for SpawnPlayer {
@@ -57,7 +55,6 @@ impl Player for SpawnPlayer {
         if self.live.len() >= MAX_CONCURRENT { return; }
         let mut cmd = Command::new("pw-play");
         cmd.arg("--volume").arg(format!("{:.3}", g));
-        if let Some(t) = &self.target { cmd.arg("--target").arg(t); }
         cmd.arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         match cmd.spawn() {
             Ok(c) => { self.live.push(c); self.ok = true; }
@@ -66,7 +63,6 @@ impl Player for SpawnPlayer {
     }
     fn set_muted(&mut self, m: bool) { self.muted = m; }
     fn muted(&self) -> bool { self.muted }
-    fn set_target(&mut self, target: Option<String>) { self.target = target; }
     fn stream_ok(&self) -> bool { self.ok }
 }
 
@@ -126,11 +122,10 @@ pub struct Mix {
     active: bool,          // stream currently active (set from the PipeWire thread)
 }
 
-enum Msg { Wake, Sleep, Reconnect(Option<String>), Quit }
+enum Msg { Wake, Sleep, Quit }
 
 pub struct InProcessPlayer {
     muted: bool,
-    target: Option<String>,
     cache: HashMap<PathBuf, Arc<Vec<f32>>>,
     mix: Arc<Mutex<Mix>>,
     stream_on: Arc<std::sync::atomic::AtomicBool>,
@@ -157,7 +152,7 @@ impl InProcessPlayer {
             Ok(Err(e)) => return Err(e),
             Err(_) => return Err("pipewire thread did not start".into()),
         }
-        Ok(InProcessPlayer { muted: false, target: None, cache: HashMap::new(), mix, stream_on, tx, thread: Some(thread), ok })
+        Ok(InProcessPlayer { muted: false, cache: HashMap::new(), mix, stream_on, tx, thread: Some(thread), ok })
     }
 
     fn sample(&mut self, path: &Path) -> Option<Arc<Vec<f32>>> {
@@ -217,13 +212,6 @@ impl Player for InProcessPlayer {
     fn set_muted(&mut self, m: bool) { self.muted = m; }
     fn muted(&self) -> bool { self.muted }
 
-    fn set_target(&mut self, target: Option<String>) {
-        if target != self.target {
-            self.target = target.clone();
-            let _ = self.tx.send(Msg::Reconnect(target));
-        }
-    }
-
     fn stream_ok(&self) -> bool { self.ok.load(std::sync::atomic::Ordering::Relaxed) }
 
     fn shutdown(&mut self) {
@@ -259,10 +247,10 @@ fn format_pod() -> Vec<u8> {
     ).unwrap().0.into_inner()
 }
 
-fn make_stream(core: &pipewire::core::CoreRc, mix: Arc<Mutex<Mix>>, target: &Option<String>,
+fn make_stream(core: &pipewire::core::CoreRc, mix: Arc<Mutex<Mix>>,
                ok: Arc<std::sync::atomic::AtomicBool>) -> Result<StreamState, pipewire::Error> {
     use pipewire as pw;
-    let mut props = pw::properties::properties! {
+    let props = pw::properties::properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Playback",
         *pw::keys::MEDIA_ROLE => "Game",
@@ -271,7 +259,6 @@ fn make_stream(core: &pipewire::core::CoreRc, mix: Arc<Mutex<Mix>>, target: &Opt
         *pw::keys::NODE_LATENCY => "256/48000",
         *pw::keys::AUDIO_CHANNELS => "2",
     };
-    if let Some(t) = target { props.insert("target.object", t.as_str()); }
     let stream = pw::stream::StreamRc::new(core.clone(), "omaclack", props)?;
     let ok2 = ok.clone();
     let listener = stream
@@ -348,17 +335,15 @@ fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
     let core = match context.connect_rc(None) { Ok(c) => c, Err(e) => { let _ = ready.send(Err(e.to_string())); return } };
 
     let state: std::rc::Rc<std::cell::RefCell<Option<StreamState>>> = std::rc::Rc::new(std::cell::RefCell::new(None));
-    match make_stream(&core, mix.clone(), &None, ok.clone()) {
+    match make_stream(&core, mix.clone(), ok.clone()) {
         Ok(s) => *state.borrow_mut() = Some(s),
         Err(e) => { let _ = ready.send(Err(e.to_string())); return }
     }
     let _ = ready.send(Ok(()));
 
     let ml = mainloop.clone();
-    let core2 = core.clone();
     let mix_r = mix.clone();
     let state_r = state.clone();
-    let ok_r = ok.clone();
     let on_r = stream_on.clone();
     let _rx = rx.attach(mainloop.loop_(), move |msg| match msg {
         Msg::Wake => {
@@ -380,24 +365,6 @@ fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
                 if let Some(s) = state_r.borrow().as_ref() { let _ = s.stream.set_active(false); }
                 mix_r.lock().unwrap().active = false;
                 on_r.store(false, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-        Msg::Reconnect(target) => {
-            // Drop the old stream (disconnects) and connect a new one to the new target.
-            *state_r.borrow_mut() = None;
-            match make_stream(&core2, mix_r.clone(), &target, ok_r.clone()) {
-                Ok(s) => {
-                    let has_voices = !mix_r.lock().unwrap().voices.is_empty();
-                    mix_r.lock().unwrap().active = false;
-                    on_r.store(false, std::sync::atomic::Ordering::Relaxed);
-                    if has_voices {
-                        let _ = s.stream.set_active(true);
-                        mix_r.lock().unwrap().active = true;
-                        on_r.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    *state_r.borrow_mut() = Some(s);
-                }
-                Err(_) => ok_r.store(false, std::sync::atomic::Ordering::Relaxed),
             }
         }
         Msg::Quit => ml.quit(),

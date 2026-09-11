@@ -181,15 +181,21 @@ class ControllerTest(unittest.TestCase):
         self.assertTrue(self.player.played[1].endswith("/mouse/logitech/left.opus"))
         self.assertTrue(self.ctl.handle({"cmd": "play", "key": 273})["ok"])
         self.assertTrue(self.player.played[2].endswith("/mouse/logitech/right.opus"))
-        self.assertTrue(self.ctl.handle({"cmd": "play", "key": 30, "down": False})["ok"])
-        self.assertTrue(self.player.played[3].endswith("/mx-blue/up/30.opus"))
-        self.assertAlmostEqual(self.player.volumes[3], 0.7 * D.RELEASE_GAIN)
-        self.ctl.handle({"cmd": "release", "value": False})
-        self.assertFalse(self.ctl.handle({"cmd": "play", "key": 30, "down": False})["ok"])
         self.ctl.handle({"cmd": "mouse", "value": False})
         self.assertFalse(self.ctl.handle({"cmd": "play", "key": 272})["ok"])
         self.ctl.handle({"cmd": "enable", "value": False})
         self.assertFalse(self.ctl.handle({"cmd": "play", "key": 30})["ok"])
+
+    def test_keys_press_only_mouse_press_and_release(self):
+        self.assertFalse(self.ctl.handle({"cmd": "play", "key": 30, "down": False})["ok"])
+        self.assertEqual(self.player.played, [])
+        self.assertTrue(self.ctl.handle({"cmd": "play", "key": 272, "down": False})["ok"])
+        self.assertTrue(self.player.played[0].endswith("/mouse/logitech/up/left.opus"))
+        self.assertAlmostEqual(self.player.volumes[0], 0.7 * D.RELEASE_GAIN)
+        # A user keyboard pack that still ships up/ stays press only.
+        self.ctl.pack.release = self.ctl.mouse_pack.release
+        self.assertFalse(self.ctl.handle({"cmd": "play", "key": 30, "down": False})["ok"])
+        self.assertEqual(len(self.player.played), 1)
 
     def test_velocity_gain(self):
         self.ctl.velocity = True
@@ -208,13 +214,7 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(st["devices"], ["AT Translated Set 2 keyboard"])
         self.assertEqual(st["top"][0], (30, 2))
 
-    def test_room_and_theme_commands(self):
-        started = []
-        self.ctl.room.start = lambda name: started.append(name)
-        self.assertEqual(self.ctl.handle({"cmd": "room", "value": "wood"})["room"], "wood")
-        self.assertEqual(started, ["wood"])
-        self.assertEqual(self.ctl.handle({"cmd": "room", "value": "bogus"})["room"], "none")
-        self.assertEqual([r["id"] for r in self.ctl.status()["rooms"]], ["desk", "tray", "wood", "wall"])
+    def test_theme_command(self):
         r = self.ctl.handle({"cmd": "theme", "slug": "tokyo-night"})
         self.assertEqual((r["evt"], r["slug"]), ("theme", "tokyo-night"))
         self.assertTrue(self.player.played[-1].endswith("/28.opus"))
@@ -224,30 +224,32 @@ class ControllerTest(unittest.TestCase):
 
 
 class SoundPacksTest(unittest.TestCase):
-    PACKS = ["box-navy", "buckling-spring", "holy-panda", "mx-blue", "mx-brown", "mx-red", "nk-cream", "topre"]
+    PACKS = ["holy-panda", "mx-blue", "mx-brown", "mx-red", "topre"]
     MOUSE = ["crisp", "logitech", "razer", "soft"]
 
-    def test_every_pack_is_credited_opus_with_release(self):
+    def test_every_pack_is_credited_opus_and_only_mouse_has_release(self):
         self.assertEqual(D.list_packs([SOUNDS]), self.PACKS)
         self.assertEqual(D.list_packs([os.path.join(SOUNDS, "mouse")]), self.MOUSE)
         for p in self.PACKS + ["mouse/" + m for m in self.MOUSE]:
             d = os.path.join(SOUNDS, p)
             meta = json.load(open(os.path.join(d, "pack.json")))
-            for k in ("name", "credit", "source", "license", "release"):
+            mouse = p.startswith("mouse/")
+            for k in ("name", "credit", "source", "license") + (("release",) if mouse else ()):
                 self.assertTrue(meta.get(k), "%s missing %s" % (p, k))
             self.assertTrue(os.path.isfile(os.path.join(d, "default.opus")), p)
-            self.assertTrue(os.path.isfile(os.path.join(d, "up", "default.opus")), p)
+            self.assertEqual(os.path.isdir(os.path.join(d, "up")), mouse, p)
             for root, _, files in os.walk(d):
                 for f in files:
                     if f == "pack.json":
                         continue
                     self.assertTrue(f.endswith(".opus"), f)
                     self.assertLess(os.path.getsize(os.path.join(root, f)), 12000, "%s/%s too big" % (p, f))
-            roots = [os.path.join(SOUNDS, "mouse")] if p.startswith("mouse/") else [SOUNDS]
+            roots = [os.path.join(SOUNDS, "mouse")] if mouse else [SOUNDS]
             pack = D.Pack(p.split("/")[-1], roots)
             for code in (1, 30, 57, 28, 14, 105, 272, 273):
                 self.assertTrue(os.path.isfile(pack.sample_for(code)))
-                self.assertTrue(os.path.isfile(pack.sample_for(code, down=False)))
+                if mouse:
+                    self.assertTrue(os.path.isfile(pack.sample_for(code, down=False)))
 
     def test_every_sample_opens_in_libsndfile(self):
         """pw-play decodes via libsndfile; a rejected file is a silent key."""

@@ -73,7 +73,6 @@ def main(argv):
         res["startup_ms"] = round((time.monotonic() - t0) * 1000, 1)
         assert hello["evt"] == "hello"
         rpc(p, {"cmd": "load", "pack": "mx-blue"})
-        rpc(p, {"cmd": "release", "value": False})
         rpc(p, {"cmd": "volume", "value": 100})
         time.sleep(2.0)
         res["rss_kb"] = rss_kb(p.pid)

@@ -73,7 +73,7 @@ def main(argv):
     out_root = os.path.join(USER_DIR, "mouse") if mouse else USER_DIR
     B.OUT = out_root
     out = os.path.join(out_root, pid)
-    B.clear_pack(pid)
+    B.clear_pack(pid, release=mouse)
 
     codes = {}       # linux code -> (src, start_s, dur_s, rel_start_s, rel_dur_s)
     if "definitions" in cfg:                       # MechvibesDX
@@ -119,18 +119,22 @@ def main(argv):
             gains[s] = B.peak_gain(s)
         pan = None if mouse else B.key_pan(code)
         B.encode(s, os.path.join(out, "%d.opus" % code), st, du, gains[s], pan)
+        # Keyboard packs are press only; mouse buttons also click on release.
+        if not mouse:
+            continue
         if r0 is not None:
             B.encode(s, os.path.join(out, "up", "%d.opus" % code), r0, rd, gains[s] - 3.0, pan)
         else:
             B.derive_release(s, os.path.join(out, "up", "%d.opus" % code), st, du, gains[s], pan)
     first = "%d.opus" % (30 if 30 in codes else sorted(codes)[0])
     B.link_default(out, first)
-    B.link_default(os.path.join(out, "up"), first)
-    derived = any(r0 is None for (_, _, _, r0, _) in codes.values())
-    B.write_pack(pid, {"name": name, "credit": str(cfg.get("author") or "imported"),
-                       "source": str(cfg.get("source") or ""), "license": "see source",
-                       "release": "derived" if derived else "recorded", "stereo": not mouse,
-                       **({"keys": B.MOUSE_KEYS} if mouse else {})})
+    meta = {"name": name, "credit": str(cfg.get("author") or "imported"),
+            "source": str(cfg.get("source") or ""), "license": "see source", "stereo": not mouse}
+    if mouse:
+        B.link_default(os.path.join(out, "up"), first)
+        derived = any(r0 is None for (_, _, _, r0, _) in codes.values())
+        meta.update({"release": "derived" if derived else "recorded", "keys": B.MOUSE_KEYS})
+    B.write_pack(pid, meta)
     print("installed", out)
     if tmp:
         shutil.rmtree(tmp, ignore_errors=True)

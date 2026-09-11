@@ -1,22 +1,20 @@
 //! omaclackd: keyboard and mouse sound daemon for the Omaclack Omarchy plugin.
 //!
 //! Reads /dev/input/event* directly and plays a per-key Opus sample on every
-//! press and release. Two playback backends:
+//! key press and mouse button press/release. Two playback backends:
 //!   inprocess (default): one persistent PipeWire stream owned by this process,
 //!                        samples pre-decoded with libsndfile, mixed in the
 //!                        realtime callback, stream suspended when idle.
 //!   spawn:               one short-lived `pw-play` per event (the design the
 //!                        Python daemon used; kept for comparison).
 //!
-//! No logging, no network, nothing written to disk except the generated room
-//! configs under $XDG_RUNTIME_DIR. Child of omarchy-shell; the stdin pipe is
-//! both the control channel and the lifeline.
+//! No logging, no network, nothing written to disk. Child of omarchy-shell;
+//! the stdin pipe is both the control channel and the lifeline.
 
 mod evdev;
 mod ipc;
 mod packs;
 mod player;
-mod room;
 mod stats;
 
 use serde_json::{json, Value};
@@ -33,7 +31,7 @@ pub const BTN_MOUSE_MAX: u16 = 0x117;
 const DEBOUNCE_MS: f64 = 30.0;
 const RESCAN_S: f64 = 3.0;
 pub const RESCAN_S_PUB: f64 = RESCAN_S;
-const RELEASE_GAIN: f32 = 0.7;
+const RELEASE_GAIN: f32 = 0.7;   // mouse release relative to the press
 
 pub fn runtime_dir() -> PathBuf {
     let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
@@ -75,12 +73,10 @@ pub struct Controller {
     mouse_roots: Vec<PathBuf>,
     pack: Option<packs::Pack>,
     mouse_pack: Option<packs::Pack>,
-    room: room::Room,
     stats: stats::Stats,
     enabled: bool,
     mouse_enabled: bool,
     velocity: bool,
-    release_on: bool,
     volume: f32,
     mouse_volume: f32,
     last_press: Option<Instant>,
@@ -94,8 +90,8 @@ impl Controller {
         let mouse_roots = vec![sounds.join("mouse"), user.join("mouse")];
         let mut c = Controller {
             player, pack_roots, mouse_roots, pack: None, mouse_pack: None,
-            room: room::Room::new(), stats: stats::Stats::new(),
-            enabled: true, mouse_enabled: true, velocity: true, release_on: true,
+            stats: stats::Stats::new(),
+            enabled: true, mouse_enabled: true, velocity: true,
             volume: 0.7, mouse_volume: 0.7, last_press: None, devices: HashMap::new(), epoch: Instant::now(),
         };
         let first = packs::first_or_none(&packs::list_packs(&c.pack_roots), "mx-blue");
@@ -136,9 +132,6 @@ impl Controller {
             "enabled": self.enabled,
             "mouse": self.mouse_enabled,
             "velocity": self.velocity,
-            "release": self.release_on,
-            "room": self.room.name(),
-            "rooms": room::ROOMS.iter().map(|r| json!({"id": r.id, "name": r.desc})).collect::<Vec<_>>(),
             "devices": devs.iter().map(|d| d.0.clone()).collect::<Vec<_>>(),
             "user_dir": self.pack_roots[1].to_string_lossy(),
             "backend": self.player.name(),
@@ -166,7 +159,8 @@ impl Controller {
                 if let Some(d) = device { if !d.is_empty() { *self.devices.entry(d.to_string()).or_insert(0) += 1; } }
             }
         } else {
-            if !self.release_on { return None; }
+            // Keys sound on press only; mouse buttons click on press and release.
+            if !is_mouse { return None; }
             volume *= RELEASE_GAIN;
         }
         let pan = pack.pan_for(code);
@@ -200,12 +194,6 @@ impl Controller {
             "enable" => { self.enabled = flag(msg.get("value"), true); json!({"ok": true, "enabled": self.enabled}) }
             "mouse" => { self.mouse_enabled = flag(msg.get("value"), true); json!({"ok": true, "mouse": self.mouse_enabled}) }
             "velocity" => { self.velocity = flag(msg.get("value"), true); json!({"ok": true, "velocity": self.velocity}) }
-            "release" => { self.release_on = flag(msg.get("value"), true); json!({"ok": true, "release": self.release_on}) }
-            "room" => {
-                let name = self.room.set(msg.get("value").and_then(|v| v.as_str()).unwrap_or("none"));
-                self.player.set_target(if name == "none" { None } else { Some(room::ROOM_SINK.to_string()) });
-                json!({"ok": true, "room": name})
-            }
             "stats" => {
                 let mut r = self.stats.report(self.now_s());
                 let mut devs: Vec<(&String, &u64)> = self.devices.iter().collect();
@@ -345,7 +333,6 @@ fn main() {
             }
         }
     }
-    ctl.room.stop();
     ctl.player.shutdown();
     server.close();
 }
@@ -389,6 +376,32 @@ mod tests {
         assert!(!k.on_press(30, 10.0));
         assert!(k.on_press(31, 11.0));
         assert!(k.on_press(30, 31.0));
+    }
+
+    struct FakePlayer(std::rc::Rc<std::cell::RefCell<Vec<(PathBuf, f32)>>>);
+    impl player::Player for FakePlayer {
+        fn name(&self) -> &'static str { "fake" }
+        fn play(&mut self, path: &std::path::Path, volume: f32, _pan: f32) { self.0.borrow_mut().push((path.to_path_buf(), volume)); }
+        fn set_muted(&mut self, _m: bool) {}
+        fn muted(&self) -> bool { false }
+        fn stream_ok(&self) -> bool { true }
+    }
+
+    #[test]
+    fn keys_press_only_mouse_press_and_release() {
+        let played = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sounds = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("sounds");
+        let mut c = Controller::new(Box::new(FakePlayer(played.clone())), sounds, std::env::temp_dir().join("omaclack-no-user-packs"));
+        c.velocity = false;
+        let t = Instant::now();
+        assert!(c.play(30, t, true, None).is_some());
+        assert!(c.play(30, t, false, None).is_none());
+        assert!(c.play(272, t, true, None).is_some());
+        assert!(c.play(272, t, false, None).is_some());
+        let p = played.borrow();
+        assert_eq!(p.len(), 3);
+        assert!(p[2].0.ends_with("up/left.opus"));
+        assert!((p[2].1 - 0.7 * RELEASE_GAIN).abs() < 1e-5);
     }
 
     #[test]

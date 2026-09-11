@@ -35,12 +35,6 @@ Panel {
   }
   readonly property var packOptions: options(packs)
   readonly property var mousePackOptions: options(mousePacks)
-  readonly property var roomOptions: {
-    var out = [{ value: "none", label: "No room" }]
-    var rooms = service ? service.rooms : []
-    for (var i = 0; i < rooms.length; i++) out.push({ value: rooms[i].id, label: rooms[i].name })
-    return out
-  }
 
   readonly property string statusText: !service ? "starting"
     : !live ? "daemon offline"
@@ -57,7 +51,6 @@ Panel {
   }
 
   Timer { id: keyPreview; interval: 120; onTriggered: if (root.service) root.service.preview(30) }
-  Timer { id: roomPreview; interval: 600; onTriggered: if (root.service) root.service.preview(30) }
   Timer { id: mousePreview; interval: 120; onTriggered: if (root.service) root.service.preview(272) }
 
   // Section title with an optional value on the right ("KEYBOARD   70%").
@@ -192,30 +185,11 @@ Panel {
           value: root.service ? root.service.currentPack : ""
           onChanged: function(v) { if (!root.service) return; root.service.setPack(v); keyPreview.restart() }
         }
-        Row {
-          width: parent.width
-          spacing: Style.space(6)
-          Chip {
-            id: velocityChip
-            text: "Velocity"
-            tooltipText: "Louder when you type fast"
-            current: root.service ? root.service.velocity : false
-            onClicked: if (root.service) root.service.setVelocity(!root.service.velocity)
-          }
-          Chip {
-            id: releaseChip
-            text: "Release"
-            tooltipText: "Play key-up sounds"
-            current: root.service ? root.service.releaseSounds : false
-            onClicked: if (root.service) root.service.setReleaseSounds(!root.service.releaseSounds)
-          }
-          PackDropdown {
-            width: parent.width - velocityChip.width - releaseChip.width - Style.space(12)
-            anchors.verticalCenter: parent.verticalCenter
-            options: root.roomOptions
-            value: root.service ? root.service.room : "none"
-            onChanged: function(v) { if (!root.service) return; root.service.setRoom(v); roomPreview.restart() }
-          }
+        Chip {
+          text: "Velocity"
+          tooltipText: "Louder when you type fast"
+          current: root.service ? root.service.velocity : false
+          onClicked: if (root.service) root.service.setVelocity(!root.service.velocity)
         }
         Row {
           visible: !!root.hint && root.service && root.service.currentPack !== root.hint.pack

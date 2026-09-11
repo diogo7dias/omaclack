@@ -31,8 +31,6 @@ Item {
   property bool mouseEnabled: true
   property string mousePack: "logitech"
   property bool velocity: true       // louder when typing fast
-  property bool releaseSounds: true  // key-up samples
-  property string room: "none"
   property var denylist: []          // lower-cased Wayland app ids
   property bool muteInMeetings: true // mute while any app records the microphone
   property bool quietHours: false
@@ -41,9 +39,8 @@ Item {
   property int quietPercent: 40      // volume scale inside quiet hours
 
   // ---- daemon state (live) ----
-  property var packs: []             // [{id, name, credit, source, release, user}]
+  property var packs: []             // [{id, name, credit, source, user}]
   property var mousePacks: []
-  property var rooms: []             // [{id, name}]
   property var devices: []           // keyboard names that produced presses, busiest first
   property bool connected: false
   property bool daemonRunning: false
@@ -146,8 +143,6 @@ Item {
   }
   function setMouseEnabled(v) { mouseEnabled = !!v; send({ cmd: "mouse", value: mouseEnabled }); save() }
   function setVelocity(v) { velocity = !!v; send({ cmd: "velocity", value: velocity }); save() }
-  function setReleaseSounds(v) { releaseSounds = !!v; send({ cmd: "release", value: releaseSounds }); save() }
-  function setRoom(id) { room = String(id || "none"); send({ cmd: "room", value: room }); save() }
   function setMuteInMeetings(v) { muteInMeetings = !!v; save() }
   function setQuietHours(v) { quietHours = !!v; save() }
   function setQuietRange(from, to) {
@@ -178,7 +173,6 @@ Item {
     var rules = [
       [/at translated set 2|apple internal|thinkpad|laptop/, "mx-red", "laptop keyboard: try a quiet linear"],
       [/hhkb|realforce|topre|leopold fc660c/, "topre", "Topre board detected"],
-      [/model m|unicomp/, "buckling-spring", "buckling spring board detected"],
       [/keychron|nuphy|ducky|glorious|wooting|varmilo|akko|leopold|drop|corsair|razer|logitech g|steelseries|hyperx|epomaker|royal kludge|rk/, "mx-brown", "mechanical board detected"],
     ]
     for (var i = 0; i < rules.length; i++) {
@@ -209,8 +203,6 @@ Item {
       if (typeof c.mouse === "boolean") mouseEnabled = c.mouse
       if (typeof c.mousePack === "string" && c.mousePack) mousePack = c.mousePack
       if (typeof c.velocity === "boolean") velocity = c.velocity
-      if (typeof c.release === "boolean") releaseSounds = c.release
-      if (typeof c.room === "string" && c.room) room = c.room
       if (typeof c.muteInMeetings === "boolean") muteInMeetings = c.muteInMeetings
       if (typeof c.quietHours === "boolean") quietHours = c.quietHours
       if (typeof c.quietFrom === "string") quietFrom = c.quietFrom
@@ -231,8 +223,8 @@ Item {
     saveDebounce.stop()
     configFile.setText(JSON.stringify({
       version: 2, enabled: enabled, volume: volume, pack: currentPack, mouse: mouseEnabled,
-      mousePack: mousePack, mouseVolume: mouseVolume, velocity: velocity, release: releaseSounds,
-      room: room, muteInMeetings: muteInMeetings, quietHours: quietHours, quietFrom: quietFrom,
+      mousePack: mousePack, mouseVolume: mouseVolume, velocity: velocity,
+      muteInMeetings: muteInMeetings, quietHours: quietHours, quietFrom: quietFrom,
       quietTo: quietTo, quietPercent: quietPercent, denylist: denylist
     }, null, 2) + "\n")
   }
@@ -279,8 +271,6 @@ Item {
     pushVolumes()
     send({ cmd: "mouse", value: mouseEnabled })
     send({ cmd: "velocity", value: velocity })
-    send({ cmd: "release", value: releaseSounds })
-    send({ cmd: "room", value: room })
     send({ cmd: "mute", toggle: effectiveMuted })
     send({ cmd: "status" })
   }
@@ -294,7 +284,6 @@ Item {
     if (Array.isArray(msg.devices)) devices = msg.devices
     if (Array.isArray(msg.packs)) packs = msg.packs
     if (Array.isArray(msg.mouse_packs)) mousePacks = msg.mouse_packs
-    if (Array.isArray(msg.rooms)) rooms = msg.rooms
     if (msg.evt === "hello") {
       streamOk = msg.stream === true
       connected = true

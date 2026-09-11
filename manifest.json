@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.diogo7dias.omaclack",
   "name": "Omaclack",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Diogo M.",
   "license": "MIT",
-  "description": "Mechanical keyboard and mouse click sounds for Omarchy. Eight switch packs, four mouse packs. Runs only on this machine: no network, no logs, no keystrokes saved.",
+  "description": "Mechanical keyboard and mouse click sounds for Omarchy. Five switch packs, four mouse packs. Runs only on this machine: no network, no logs, no keystrokes saved.",
   "kinds": ["service", "bar-widget"],
   "keepLoaded": true,
   "entryPoints": {

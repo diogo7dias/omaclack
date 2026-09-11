@@ -5,11 +5,13 @@ Usage: tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>
        (paths to checkouts of the four upstream repos)
 
 Layout per pack:
-  sounds/<pack>/<code>.opus        key press,  stereo 48 kHz Opus, panned by key position
-  sounds/<pack>/up/<code>.opus     key release
-  sounds/<pack>/{,up/}default.opus fallback
+  sounds/<pack>/<code>.opus        key press, stereo 48 kHz Opus, panned by key position
+  sounds/<pack>/default.opus       fallback
   sounds/<pack>/pack.json          name, credit, source, license, optional "keys" map
-  sounds/mouse/<pack>/...          same shape with left/right/middle instead of codes
+  sounds/mouse/<pack>/...          same shape with left/right/middle instead of codes,
+                                   plus up/ for the button release
+
+Keyboard packs are press only; mouse packs click on press and release.
 
 Every file is opened through libsndfile after encoding (that is what pw-play
 decodes with) and re-encoded with a longer tail if it is rejected.
@@ -18,6 +20,7 @@ import ctypes
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -31,21 +34,18 @@ TYPETONE = "https://github.com/phuclh/omarchy-typetone"
 
 # ------------------------------------------------------------------ pack lists
 
-# MechvibesDX "single" packs: one sprite, per-key press AND release timings.
+# MechvibesDX "single" packs: one sprite, per-key press timings.
 DX_PACKS = [
     ("cherrymx-blue-abs", "mx-blue", "Cherry MX Blue"),
     ("cherrymx-brown-abs", "mx-brown", "Cherry MX Brown"),
     ("cherrymx-red-abs", "mx-red", "Cherry MX Red"),
 ]
-# Old Mechvibes packs (press only, release derived): none shipped any more.
+# Old Mechvibes packs: none shipped any more.
 MV_PACKS = []
 MV_MULTI_PACKS = []
-# kbsim: five row samples + space/enter/backspace, press and release.
+# kbsim: five row samples + space/enter/backspace.
 KB_PACKS = [
     ("holypanda", "holy-panda", "Holy Panda"),
-    ("buckling", "buckling-spring", "Buckling Spring"),
-    ("boxnavy", "box-navy", "Kailh Box Navy"),
-    ("cream", "nk-cream", "Novelkeys Cream"),
     ("topre", "topre", "Topre"),
 ]
 # Typetone mouse renders: press at ~0-20 ms, release ~100 ms later, then a
@@ -221,10 +221,15 @@ def write_pack(rel, meta):
     print("%-20s %3d files" % (rel, n))
 
 
-def clear_pack(rel):
+def clear_pack(rel, release=False):
+    """Empty the pack folder; up/ only survives (emptied) when the pack has releases."""
     d = os.path.join(OUT, rel)
     fresh(d)
-    fresh(os.path.join(d, "up"))
+    up = os.path.join(d, "up")
+    if release:
+        fresh(up)
+    elif os.path.isdir(up):
+        shutil.rmtree(up)
 
 
 # ------------------------------------------------------------------ builders
@@ -241,15 +246,11 @@ def build_dx(root):
             code = DX_CODES.get(kname)
             if code is None:
                 continue
-            (p0, p1), (r0, r1) = d["timing"]
-            pan = key_pan(code)
-            encode(sprite, os.path.join(out, "%d.opus" % code), p0 / 1000, min(p1 - p0, 250) / 1000, gain, pan)
-            encode(sprite, os.path.join(out, "up", "%d.opus" % code), r0 / 1000, min(r1 - r0, 200) / 1000, gain - 3.0, pan)
+            p0, p1 = d["timing"][0]
+            encode(sprite, os.path.join(out, "%d.opus" % code), p0 / 1000, min(p1 - p0, 250) / 1000, gain, key_pan(code))
         link_default(out, "30.opus")
-        link_default(os.path.join(out, "up"), "30.opus")
         write_pack(pid, {"name": name, "credit": "Mechvibes", "source": MECHVIBES_DX,
-                         "origin": "soundpacks/keyboard/" + folder, "license": "MIT",
-                         "release": "recorded", "stereo": True})
+                         "origin": "soundpacks/keyboard/" + folder, "license": "MIT", "stereo": True})
 
 
 def build_mv(root):
@@ -264,15 +265,11 @@ def build_mv(root):
             code = iohook_code(raw)
             if code is None or not isinstance(span, list):
                 continue
-            st, du = span[0] / 1000, min(span[1], 250) / 1000
-            pan = key_pan(code)
-            encode(sprite, os.path.join(out, "%d.opus" % code), st, du, gain, pan)
-            derive_release(sprite, os.path.join(out, "up", "%d.opus" % code), st, du, gain, pan)
+            encode(sprite, os.path.join(out, "%d.opus" % code), span[0] / 1000, min(span[1], 250) / 1000,
+                   gain, key_pan(code))
         link_default(out, "30.opus")
-        link_default(os.path.join(out, "up"), "30.opus")
         write_pack(pid, {"name": name, "credit": "Mechvibes", "source": MECHVIBES,
-                         "origin": "src/audio/" + folder, "license": "MIT",
-                         "release": "derived", "stereo": True})
+                         "origin": "src/audio/" + folder, "license": "MIT", "stereo": True})
 
 
 def build_mv_multi(root):
@@ -290,45 +287,35 @@ def build_mv_multi(root):
             src = os.path.join(src_dir, fn)
             if not os.path.isfile(src):
                 continue
-            pan = key_pan(code)
-            encode(src, os.path.join(out, "%d.opus" % code), 0.0, 0.25, gain, pan)
-            derive_release(src, os.path.join(out, "up", "%d.opus" % code), 0.0, 0.25, gain, pan)
+            encode(src, os.path.join(out, "%d.opus" % code), 0.0, 0.25, gain, key_pan(code))
         link_default(out, "30.opus")
-        link_default(os.path.join(out, "up"), "30.opus")
         write_pack(pid, {"name": name, "credit": "Mechvibes (recorded by Ryan)", "source": MECHVIBES,
-                         "origin": "src/audio/" + folder, "license": "MIT",
-                         "release": "derived", "stereo": True})
+                         "origin": "src/audio/" + folder, "license": "MIT", "stereo": True})
 
 
 def build_kbsim(root):
     for folder, pid, name in KB_PACKS:
         base = os.path.join(root, "src", "assets", "audio", folder)
-        press, rel = os.path.join(base, "press"), os.path.join(base, "release")
+        press = os.path.join(base, "press")
         clear_pack(pid)
         out = os.path.join(OUT, pid)
         gain = min(peak_gain(os.path.join(press, "GENERIC_R%d.mp3" % r)) for r in range(5))
-        rgain = peak_gain(os.path.join(rel, "GENERIC.mp3")) - 3.0
         keys = {}
         # One unpanned file per row; the mixer pans by key at playback (`pan: true`).
         for r, codes in ROWS.items():
             encode(os.path.join(press, "GENERIC_R%d.mp3" % r), os.path.join(out, "row%d.opus" % r),
                    0.0, 0.25, gain, None)
-            encode(os.path.join(rel, "GENERIC.mp3"), os.path.join(out, "up", "row%d.opus" % r),
-                   0.0, 0.2, rgain, None)
             for c in codes:
                 if c not in SPECIAL:
                     keys[str(c)] = "row%d.opus" % r
         for c, nm in SPECIAL.items():
-            for sub, g in (("press", gain), ("release", rgain)):
-                src = os.path.join(base, sub, nm.upper() + ".mp3")
-                if os.path.exists(src):
-                    dst = os.path.join(out, "up" if sub == "release" else "", "%d.opus" % c)
-                    encode(src, dst, 0.0, 0.25, g, None)
+            src = os.path.join(press, nm.upper() + ".mp3")
+            if os.path.exists(src):
+                encode(src, os.path.join(out, "%d.opus" % c), 0.0, 0.25, gain, None)
         link_default(out, "row3.opus")
-        link_default(os.path.join(out, "up"), "row3.opus")
         write_pack(pid, {"name": name, "credit": "kbsim by Thomas Lai", "source": KBSIM,
                          "origin": "src/assets/audio/" + folder, "license": "MIT",
-                         "release": "recorded", "stereo": True, "pan": True, "keys": keys})
+                         "stereo": True, "pan": True, "keys": keys})
 
 
 MOUSE_KEYS = {"272": "left.opus", "273": "right.opus", "274": "middle.opus",
@@ -339,7 +326,7 @@ def build_tt_mouse(root):
     for folder, pid, name, credit, split, end in TT_MOUSE:
         src_dir = os.path.join(root, "mouse-sounds", folder)
         rel = "mouse/" + pid
-        clear_pack(rel)
+        clear_pack(rel, release=True)
         out = os.path.join(OUT, rel)
         gain = min(peak_gain(os.path.join(src_dir, b + ".wav")) for b in ("left", "right", "middle"))
         for b in ("left", "right", "middle"):
@@ -359,7 +346,7 @@ def build_dx_mouse(root):
         cfg = json.load(open(os.path.join(src_dir, "config.json")))
         sprite = os.path.join(src_dir, cfg["audio_file"])
         rel = "mouse/" + pid
-        clear_pack(rel)
+        clear_pack(rel, release=True)
         out = os.path.join(OUT, rel)
         gain = peak_gain(sprite)
         names = {"MouseLeft": "left", "MouseRight": "right", "MouseMiddle": "middle"}

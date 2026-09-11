@@ -1,11 +1,11 @@
 # Omaclack
 
 Mechanical keyboard and mouse click sounds for [Omarchy](https://omarchy.org)
-(Quattro shell). Eight keyboard packs and four mouse packs cut from real
-switch and button recordings, press and release for every key, panned by key
-position. The default Rust daemon mixes into one PipeWire stream; other CPUs
+(Quattro shell). Five keyboard packs and four mouse packs cut from real
+switch and button recordings: keys sound on press, panned by key position;
+mouse buttons click on press and release. The default Rust daemon mixes into one PipeWire stream; other CPUs
 fall back to one `pw-play` per event. Everything stays on this machine: no
-network, no logging, no keystrokes written to disk. About 4 MB installed.
+network, no logging, no keystrokes written to disk. About 2.5 MB installed.
 
 ```bash
 omarchy plugin add https://github.com/diogo7dias/omaclack.git --enable
@@ -15,10 +15,8 @@ Bar widget with the same Nerd Font keyboard glyph style as the shell's own
 icons; it dims while sound is off or muted. Left-click opens the panel,
 right-click toggles, the wheel nudges keyboard volume. The panel is one page:
 
-- keyboard: volume, pack, velocity (louder when you type fast), release
-  sounds, and a room preset (desk, tray, wooden desk, through a wall)
-  rendered live by a PipeWire filter chain, plus a hint for the keyboard you
-  are actually typing on
+- keyboard: volume, pack, velocity (louder when you type fast), plus a hint
+  for the keyboard you are actually typing on
 - mouse: on/off, pack and volume of its own
 - quiet: mute while any app records the microphone, quiet hours, and apps to
   ignore by Wayland app id
@@ -99,8 +97,9 @@ omarchy-shell
 - **omaclackd** opens every `/dev/input/event*` it can, `select()`s on them,
   keeps only key-down events for keyboard codes (`< 0x100`) and mouse buttons
   (`BTN_LEFT..BTN_TASK`). Same key within 30 ms is dropped; every other press
-  sounds, modifiers included, and so does the release (`up/<code>.opus`, 30%
-  quieter). Mouse buttons play from a separate mouse pack. Velocity scales a
+  sounds, modifiers included. Keys are press only. Mouse buttons play from a
+  separate mouse pack and also click on release (`up/<name>.opus`, 30%
+  quieter). Velocity scales a
   key from 80% (unhurried) to 100% (the previous key was under 100 ms ago).
 - **Playback (Rust, default)**: every sample of the current keyboard and
   mouse pack is decoded once with libsndfile (the decoder pw-play uses) into
@@ -108,13 +107,8 @@ omarchy-shell
   voices in its realtime callback, filling exactly the frames each cycle asks
   for. The stream is created inactive and only activated while something
   plays; 2.5 s after the last key it deactivates so the sink can suspend.
-  Room presets reconnect the stream to the room sink.
 - **Playback (Python fallback)**: `pw-play --volume <gain> <key>.opus` per
   event, capped at 24 in flight. No audio passes through Python.
-- **Rooms**: a preset spawns `pipewire -c <generated conf>` with a
-  filter-chain sink (low shelf, lowpass, convolver on a synthesised impulse
-  response written to `$XDG_RUNTIME_DIR/omaclack`), and pw-play targets it.
-  The sink suspends when idle and the child dies with the preset or the daemon.
 - **Ignore list and calls**: the service watches the focused Wayland toplevel
   and mutes the daemon while its app id is listed, and, via Quickshell's
   PipeWire binding, while any `Stream/Input/Audio` node exists (an app
@@ -135,10 +129,8 @@ socket (one socket client at a time), `flock()` on `ctl.sock.lock`.
 {"cmd": "mousepack", "pack": "razer"} → {"ok": true, "mouse_pack": "razer"}
 {"cmd": "volume", "value": 70}        → {"ok": true, "volume": 70}          keyboard
 {"cmd": "mousevolume", "value": 40}   → {"ok": true, "mouse_volume": 40}    mouse buttons
-{"cmd": "play", "key": 30, "down": false} → release sample
+{"cmd": "play", "key": 272, "down": false} → mouse release sample (keys: {"ok": false})
 {"cmd": "velocity", "value": true}    → {"ok": true, "velocity": true}
-{"cmd": "release", "value": true}     → {"ok": true, "release": true}
-{"cmd": "room", "value": "wood"}      → {"ok": true, "room": "wood"}       none|desk|tray|wood|wall
 {"cmd": "stats"}                      → {"ok": true, "kpm": 61, "total": 812, "rhythm": [...10], "top": [[30, 90], ...]}
 {"cmd": "theme", "slug": "tokyo-night"} → plays a key, emits {"evt": "theme", "slug": ...}
 {"cmd": "mute", "toggle": true}       → {"ok": true, "muted": true}
@@ -150,7 +142,7 @@ socket (one socket client at a time), `flock()` on `ctl.sock.lock`.
 ```
 
 Daemon-initiated events: `{"evt": "hello", ...status, "denied": bool}` on
-connect (status includes `packs`, `mouse_packs`, `rooms`, `devices`),
+connect (status includes `packs`, `mouse_packs`, `devices`),
 `{"evt": "key", "latency_ms": 0.4}` per sounded press on the parent pipe
 only (no keycode; the control socket is not a keystream),
 `{"evt": "theme", "slug": ...}` after a `theme` command (the panel ignores both events).
@@ -168,10 +160,10 @@ printf '{"cmd":"play","key":57}\n{"cmd":"quit"}\n' | nc -U "$sock"
 
 ```
 sounds/<pack>/<code>.opus        press   (stereo 48 kHz Opus, ~1 KB, panned by key position)
-sounds/<pack>/up/<code>.opus     release
-sounds/<pack>/{,up/}default.opus fallback for unmapped keys
-sounds/<pack>/pack.json          name, credit, source, license, release: recorded|derived, optional keys map
-sounds/mouse/<pack>/...          left/right/middle(.opus) + up/, keys map to BTN_* codes
+sounds/<pack>/default.opus       fallback for unmapped keys
+sounds/<pack>/pack.json          name, credit, source, license, optional keys map
+sounds/mouse/<pack>/...          left/right/middle(.opus) + up/ for the release,
+                                 release: recorded|derived, keys map to BTN_* codes
 ```
 
 Keycodes are Linux `KEY_*` numbers (`30` = A, `57` = space, `28` = enter).
@@ -186,16 +178,15 @@ tools/omaclack-import ~/Downloads/clicks --mouse --name "My mouse"  # mouse
 
 Then click "rescan packs" in the panel. Needs `ffmpeg`.
 
-### Keyboard packs (8)
+### Keyboard packs (5)
 
 | pack | name | source |
 |---|---|---|
-| `mx-blue`, `mx-brown`, `mx-red` | Cherry MX Blue, Brown, Red | [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx), per key, press + release |
-| `holy-panda`, `buckling-spring`, `box-navy`, `nk-cream`, `topre` | Holy Panda, Buckling Spring, Kailh Box Navy, Novelkeys Cream, Topre | [kbsim](https://github.com/tplai/kbsim), five row samples + space/enter/backspace, panned at playback |
+| `mx-blue`, `mx-brown`, `mx-red` | Cherry MX Blue, Brown, Red | [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx), per key |
+| `holy-panda`, `topre` | Holy Panda, Topre | [kbsim](https://github.com/tplai/kbsim), five row samples + space/enter/backspace, panned at playback |
 
-Every shipped pack has a recorded release. Quality over quantity: one clicky,
-one tactile and one linear Cherry, then the four boards people actually ask
-for by name.
+Quality over quantity: one clicky, one tactile and one linear Cherry, then
+Holy Panda and Topre.
 
 ### Mouse packs (4)
 
@@ -219,9 +210,9 @@ libsndfile because that is what `pw-play` decodes with).
 ## Credits
 
 - **MechvibesDX** by [hainguyents13](https://github.com/hainguyents13), MIT.
-  The Cherry MX packs are sliced from its sprites using its press/release timings.
-- **kbsim** by [Thomas Lai](https://github.com/tplai/kbsim), MIT. Five packs
-  are its `press/` and `release/` samples.
+  The Cherry MX packs are sliced from its sprites using its press timings.
+- **kbsim** by [Thomas Lai](https://github.com/tplai/kbsim), MIT. Two packs
+  are its `press/` samples.
 - **Omarchy Typetone** by [phuclh](https://github.com/phuclh/omarchy-typetone),
   MIT. The mouse packs are its `mouse-sounds/` renders of CC0 Freesound
   recordings by OwlStorm, Katsuhira and Six Ways.
