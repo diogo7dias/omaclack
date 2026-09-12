@@ -28,6 +28,12 @@ Panel {
   readonly property var mousePacks: service ? service.mousePacks : []
   readonly property var hint: service ? service.deviceHint : null
 
+  // The list is whatever the daemon found at startup, so a pack added since
+  // then is missing until something asks again. Opening the panel is that ask;
+  // "rescan" stays for a pack replaced in place, which also has to drop the
+  // samples already decoded.
+  onOpenedChanged: if (opened && service) service.pollPacks()
+
   function options(list) {
     var out = []
     for (var i = 0; i < list.length; i++) out.push({ value: list[i].id, label: list[i].name + (list[i].user ? " ·" : "") })

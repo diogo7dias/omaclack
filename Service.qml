@@ -158,6 +158,9 @@ Item {
   }
   function denylistText() { return denylist.join(", ") }
   function preview(key) { send({ cmd: "play", key: key === undefined ? 30 : key }) }
+  // Cheap re-list: status re-scans the pack directories. Unlike refreshPacks()
+  // it leaves the samples the daemon already decoded alone.
+  function pollPacks() { send({ cmd: "status" }) }
   function refreshPacks() {
     send({ cmd: "status" })
     // Force the daemon to drop cached samples so a replaced pack on disk is heard.

@@ -6,7 +6,9 @@ switch and button recordings: every key is its own sample, keys sound on
 press, panned by key position;
 mouse buttons click on press and release. The default Rust daemon mixes into one PipeWire stream; other CPUs
 fall back to one `pw-play` per event. Everything stays on this machine: no
-network, no logging, no keystrokes written to disk. About 3 MB installed.
+network, no logging, no keystrokes written to disk. A 1.4 MB clone, 5.5 MB on
+disk (the packs are 677 KB of audio in 693 files, so most of that is your
+filesystem rounding each one up to a block).
 
 ```bash
 omarchy plugin add https://github.com/diogo7dias/omaclack.git --enable
