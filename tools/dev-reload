@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
-# Make the running omarchy-shell reload this plugin when the plugin directory is
-# a symlink to a checkout. inotifywait -r does not follow symlinks, so edits
-# inside the checkout are invisible to the shell; recreating the link is a
-# delete+create event on the watched directory, which triggers a full reload.
+# Show edited QML in the running omarchy-shell.
+#
+# The shell notices a changed plugin and re-reads its manifest, but keeps the
+# QML it already compiled (shell.qml guards its cache clear on
+# Qt.clearComponentCache, which QML does not have), so an edited Panel.qml
+# never appears. Quickshell.reload() rebuilds the engine from disk instead.
+# Service.qml exposes that over IPC while a `.dev` marker file exists here.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd -P)
-id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$here/manifest.json")
-link="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$id"
-if [[ -L $link ]]; then
-  ln -sfn "$here" "$link"
-  echo "reloaded $id via $link"
-else
-  echo "$link is not a symlink; the shell watches it directly, just save a file." >&2
-  exit 1
+marker="$here/.dev"
+
+if [[ ! -e $marker ]]; then
+  touch "$marker"
+  echo "created $marker (dev IPC enabled)"
+  sleep 1   # the shell reloads the plugin, which registers the handler
 fi
+
+if omarchy-shell omaclack.dev reloadShell >/dev/null 2>&1; then
+  echo "reloaded the shell from disk"
+  exit 0
+fi
+
+# No handler yet: this plugin's Service.qml is itself still the cached copy.
+# One restart bootstraps it, and every reload after this one is instant.
+echo "dev IPC not registered yet; restarting the shell once" >&2
+exec omarchy-restart-shell

@@ -301,6 +301,34 @@ Item {
     }
   }
 
+  // ---- dev reload ----
+  // The shell's plugin hot reload re-reads manifests but keeps the QML it has
+  // already compiled: shell.qml guards its cache clear on Qt.clearComponentCache,
+  // which QML does not have, so edited panels never appear. Quickshell.reload()
+  // rebuilds the engine from disk, which is the only thing that does. Registered
+  // only while a `.dev` marker file sits in the plugin directory, so an installed
+  // copy exposes nothing; tools/dev-reload creates the marker and calls this.
+  property bool devMode: false
+
+  FileView {
+    id: devMarker
+    path: root.pluginDir + ".dev"
+    printErrors: false
+    onLoaded: root.devMode = true
+    onLoadFailed: root.devMode = false
+  }
+
+  IpcHandler {
+    target: "omaclack.dev"
+    enabled: root.devMode
+
+    function reloadShell(): string {
+      // Answer before the engine goes away, or the caller reads a closed socket.
+      Qt.callLater(function() { Quickshell.reload(false) })
+      return "ok"
+    }
+  }
+
   Component.onDestruction: {
     if (saveDebounce.running) root.flushSave()
     send({ cmd: "quit" })
