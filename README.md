@@ -1,11 +1,12 @@
 # Omaclack
 
 Mechanical keyboard and mouse click sounds for [Omarchy](https://omarchy.org)
-(Quattro shell). Five keyboard packs and four mouse packs cut from real
-switch and button recordings: keys sound on press, panned by key position;
+(Quattro shell). Seven keyboard packs and four mouse packs cut from real
+switch and button recordings: every key is its own sample, keys sound on
+press, panned by key position;
 mouse buttons click on press and release. The default Rust daemon mixes into one PipeWire stream; other CPUs
 fall back to one `pw-play` per event. Everything stays on this machine: no
-network, no logging, no keystrokes written to disk. About 2.5 MB installed.
+network, no logging, no keystrokes written to disk. About 3 MB installed.
 
 ```bash
 omarchy plugin add https://github.com/diogo7dias/omaclack.git --enable
@@ -178,15 +179,21 @@ tools/omaclack-import ~/Downloads/clicks --mouse --name "My mouse"  # mouse
 
 Then click "rescan packs" in the panel. Needs `ffmpeg`.
 
-### Keyboard packs (5)
+### Keyboard packs (7)
 
-| pack | name | source |
+| pack | name | character |
 |---|---|---|
-| `mx-blue`, `mx-brown`, `mx-red` | Cherry MX Blue, Brown, Red | [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx), per key |
-| `holy-panda`, `topre` | Holy Panda, Topre | [kbsim](https://github.com/tplai/kbsim), five row samples + space/enter/backspace, panned at playback |
+| `mx-blue` | Cherry MX Blue | clicky |
+| `mx-brown` | Cherry MX Brown | tactile |
+| `mx-red` | Cherry MX Red | light linear |
+| `mx-black` | Cherry MX Black | heavy linear, deeper than red |
+| `eg-purple` | Everglide Crystal Purple | clicky, tighter than MX Blue |
+| `eg-oreo` | Everglide Oreo | creamy linear, short hits |
+| `topre` | Topre Purple Hybrid | thocky electrocapacitive |
 
-Quality over quantity: one clicky, one tactile and one linear Cherry, then
-Holy Panda and Topre.
+All seven come from [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx)
+sprites, where all 99 keys are recorded separately, so no two neighbouring
+keys repeat the same sample.
 
 ### Mouse packs (4)
 
@@ -210,14 +217,12 @@ libsndfile because that is what `pw-play` decodes with).
 ## Credits
 
 - **MechvibesDX** by [hainguyents13](https://github.com/hainguyents13), MIT.
-  The Cherry MX packs are sliced from its sprites using its press timings.
-- **kbsim** by [Thomas Lai](https://github.com/tplai/kbsim), MIT. Two packs
-  are its `press/` samples.
+  Every keyboard pack is sliced from its sprites using its press timings.
 - **Omarchy Typetone** by [phuclh](https://github.com/phuclh/omarchy-typetone),
   MIT. The mouse packs are its `mouse-sounds/` renders of CC0 Freesound
   recordings by OwlStorm, Katsuhira and Six Ways.
 
-All three licenses are reproduced in `sounds/LICENSES.md`.
+Both licenses are reproduced in `sounds/LICENSES.md`.
 
 ## Development
 

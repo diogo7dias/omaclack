@@ -162,7 +162,7 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(st["pack"], "topre")
         ids = [p["id"] for p in st["packs"]]
         self.assertIn("mx-blue", ids)
-        self.assertEqual(st["packs"][ids.index("topre")]["credit"], "kbsim by Thomas Lai")
+        self.assertEqual(st["packs"][ids.index("topre")]["credit"], "Mechvibes")
         self.assertNotIn("mouse", ids)
         self.assertEqual([p["id"] for p in st["mouse_packs"]],
                          ["crisp", "logitech", "razer", "soft"])
@@ -224,7 +224,7 @@ class ControllerTest(unittest.TestCase):
 
 
 class SoundPacksTest(unittest.TestCase):
-    PACKS = ["holy-panda", "mx-blue", "mx-brown", "mx-red", "topre"]
+    PACKS = ["eg-oreo", "eg-purple", "mx-black", "mx-blue", "mx-brown", "mx-red", "topre"]
     MOUSE = ["crisp", "logitech", "razer", "soft"]
 
     def test_every_pack_is_credited_opus_and_only_mouse_has_release(self):

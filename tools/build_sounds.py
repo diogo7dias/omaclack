@@ -2,7 +2,8 @@
 """Import sound packs into sounds/.
 
 Usage: tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>
-       (paths to checkouts of the four upstream repos)
+       (paths to checkouts of the four upstream repos; only mechvibes-dx and
+       typetone are read unless MV_PACKS or KB_PACKS below are filled back in)
 
 Layout per pack:
   sounds/<pack>/<code>.opus        key press, stereo 48 kHz Opus, panned by key position
@@ -36,18 +37,20 @@ TYPETONE = "https://github.com/phuclh/omarchy-typetone"
 
 # MechvibesDX "single" packs: one sprite, per-key press timings.
 DX_PACKS = [
+    ("cherrymx-black-abs", "mx-black", "Cherry MX Black"),
     ("cherrymx-blue-abs", "mx-blue", "Cherry MX Blue"),
     ("cherrymx-brown-abs", "mx-brown", "Cherry MX Brown"),
     ("cherrymx-red-abs", "mx-red", "Cherry MX Red"),
+    ("eg-crystal-purple", "eg-purple", "Everglide Crystal Purple"),
+    ("eg-oreo", "eg-oreo", "Everglide Oreo"),
+    ("topre-purple-hybrid-pbt", "topre", "Topre Purple Hybrid"),
 ]
 # Old Mechvibes packs: none shipped any more.
 MV_PACKS = []
 MV_MULTI_PACKS = []
-# kbsim: five row samples + space/enter/backspace.
-KB_PACKS = [
-    ("holypanda", "holy-panda", "Holy Panda"),
-    ("topre", "topre", "Topre"),
-]
+# kbsim: five row samples per pack, so every key on a row sounds identical.
+# None shipped any more; the builder stays for anyone who wants them back.
+KB_PACKS = []
 # Typetone mouse renders: press at ~0-20 ms, release ~100 ms later, then a
 # second click we drop. `split` is where press ends and release begins.
 TT_MOUSE = [
