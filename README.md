@@ -236,6 +236,13 @@ tools/omaclack-import <folder-or-zip> [--mouse]  # add a pack to ~/.config/omarc
 tools/dev-reload                                 # nudge the shell when the plugin dir is a symlink
 ```
 
+`omarchy plugin add` installs by cloning, so anything committed is downloaded
+forever, and neither a stripped ELF nor an Opus file delta-compresses: a
+rebuilt `bin/omaclackd-x86_64` costs another ~700 KB of history, a re-encoded
+pack about 100 KB. Refresh the committed binary on version bumps rather than on
+every build, and re-run `tools/build_sounds.py` only when a pack actually
+changes.
+
 Saving any file under `~/.config/omarchy/plugins/<id>/` hot-reloads the whole
 plugin, service and daemon included. Two gotchas when the plugin directory is a
 **symlink** to your checkout: the shell's `inotifywait -r` does not follow
