@@ -1,0 +1,15 @@
+{
+  "credit": "Breviceps, Freesound 447938 (CC0) via Typetone",
+  "keys": {
+    "272": "left.opus",
+    "273": "right.opus",
+    "274": "middle.opus",
+    "275": "middle.opus",
+    "276": "middle.opus"
+  },
+  "license": "CC0 recording, MIT processing",
+  "name": "Soft",
+  "origin": "mouse-sounds/soft",
+  "release": "recorded",
+  "source": "https://github.com/phuclh/omarchy-typetone"
+}

@@ -1,0 +1,15 @@
+{
+  "credit": "Six Ways, Freesound 223445 (CC0) via Typetone",
+  "keys": {
+    "272": "left.opus",
+    "273": "right.opus",
+    "274": "middle.opus",
+    "275": "middle.opus",
+    "276": "middle.opus"
+  },
+  "license": "CC0 recording, MIT processing",
+  "name": "Crisp",
+  "origin": "mouse-sounds/crisp",
+  "release": "recorded",
+  "source": "https://github.com/phuclh/omarchy-typetone"
+}

@@ -1,0 +1,15 @@
+{
+  "credit": "OwlStorm, Freesound 320146 (CC0) via Typetone",
+  "keys": {
+    "272": "left.opus",
+    "273": "right.opus",
+    "274": "middle.opus",
+    "275": "middle.opus",
+    "276": "middle.opus"
+  },
+  "license": "CC0 recording, MIT processing",
+  "name": "Logitech",
+  "origin": "mouse-sounds/logitech",
+  "release": "recorded",
+  "source": "https://github.com/phuclh/omarchy-typetone"
+}
