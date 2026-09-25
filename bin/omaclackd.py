@@ -28,14 +28,14 @@ EV_KEY = 0x01
 KEY_MAX_KEYBOARD = 0x100
 BTN_MOUSE_MIN, BTN_MOUSE_MAX = 0x110, 0x117
 
-DEBOUNCE_MS = 30.0
+DEBOUNCE_MS = 30.0   # drops same-key retrigger from switch bounce/autorepeat, not deliberate fast typing
 RESCAN_S = 3.0
-MAX_CONCURRENT = 24  # cap on simultaneous pw-play processes
+MAX_CONCURRENT = 24  # cap on simultaneous pw-play processes, so a stuck key or key flood can't fork-bomb the session
 SAMPLE_EXT = (".opus", ".ogg", ".flac", ".wav")
 RELEASE_GAIN = 0.7   # mouse release samples relative to the press volume
 STATS_WINDOW_S = 300.0
 
-INPUT_EVENT = struct.Struct("llHHi")
+INPUT_EVENT = struct.Struct("llHHi")  # struct input_event: tv_sec, tv_usec, type, code, value
 EVIOCGNAME = 0x81004506  # _IOC(_IOC_READ, 'E', 0x06, 256)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -143,7 +143,10 @@ class Pack:
 # ---------------------------------------------------------------- playback
 
 class OneShotPlayer:
-    """One pw-play per sample; gain is passed as --volume so no audio touches Python."""
+    """One pw-play per sample; gain is passed as --volume so no audio touches Python.
+
+    pw-play does the file decoding and PipeWire connection itself, so this
+    process never parses untrusted audio bytes or holds an audio fd open."""
 
     def __init__(self):
         self.muted = False
@@ -277,7 +280,7 @@ class Controller:
         if not self.velocity or self.last_press is None:
             return 1.0
         dt = now - self.last_press
-        return 0.8 + 0.2 * max(0.0, min(1.0, (0.5 - dt) / 0.4))
+        return 0.8 + 0.2 * max(0.0, min(1.0, (0.5 - dt) / 0.4))  # ramps between dt=500ms (floor) and dt=100ms (full)
 
     def play(self, code, t0=None, down=True, device=None):
         if not self.enabled:
@@ -486,7 +489,12 @@ class LineChannel:
 
 
 class CtlServer:
-    """Unix socket for the CLI, tests and hooks. One client at a time."""
+    """Unix socket for the CLI, tests and hooks. One client at a time.
+
+    Bound at 0600 under a 0700 runtime directory this process owns, and
+    guarded by an flock so a second daemon (e.g. started twice by mistake)
+    fails fast on start() instead of silently fighting the first for the
+    socket path or the connected client."""
 
     def __init__(self, path):
         self.path = path
@@ -499,6 +507,9 @@ class CtlServer:
         d = os.path.dirname(os.path.abspath(self.path))
         os.makedirs(d, mode=0o700, exist_ok=True)
         st = os.stat(d)
+        # Refuse a directory owned by someone else: XDG_RUNTIME_DIR falls back to
+        # /tmp/omaclack when unset, which is shared and could be pre-created by
+        # another user to intercept the socket.
         if st.st_uid != os.getuid():
             sys.stderr.write("omaclackd: socket directory is not owned by this user\n")
             sys.exit(1)
@@ -508,10 +519,14 @@ class CtlServer:
             os.chmod(d, 0o700)
         self.lockfd = os.open(self.path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
         try:
+            # Non-blocking exclusive lock: a second daemon on the same socket path
+            # exits immediately (2) instead of racing the first for the bind below.
             fcntl.flock(self.lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             sys.exit(2)
         try:
+            # Holding the lock makes this safe: any ctl.sock here is stale, left
+            # by a daemon that did not clean up on exit (e.g. killed).
             os.unlink(self.path)
         except FileNotFoundError:
             pass
@@ -569,6 +584,8 @@ class CtlServer:
 # ---------------------------------------------------------------- main loop
 
 def main(argv):
+    """Wire up the controller, input scanner and both IPC channels, then run
+    the select() loop until stdin (the shell pipe) closes or a signal lands."""
     sock_path = os.path.join(runtime_dir(), "ctl.sock")
     for a in argv[1:]:
         if a.startswith("--socket="):
@@ -602,7 +619,11 @@ def main(argv):
     try:
         import stat as _stat
         if _stat.S_ISFIFO(os.fstat(0).st_mode):
+            # dup(1) so the pipe keeps its own fd to stdout, independent of
+            # sys.stdout below.
             pipe = LineChannel(0, os.dup(1))
+            # fd 1 carries the JSON protocol now; redirect sys.stdout so an
+            # accidental print() from anywhere can't corrupt the line stream.
             sys.stdout = sys.stderr
             pipe.send({"evt": "hello", **ctl.status(), "denied": inputs.denied})
     except OSError:
@@ -617,6 +638,8 @@ def main(argv):
         emit_pipe(obj)
 
     def dispatch(chan, msgs):
+        """Run each queued message through the controller and write the reply
+        back to whichever channel (pipe or socket) it arrived on."""
         nonlocal running
         for msg in msgs:
             resp = ctl.handle(msg)
@@ -662,8 +685,10 @@ def main(argv):
                         continue
                     lat = ctl.play(code, now, down, name if down else None)
                     if lat is not None and down:
-                        # Latency only, and only on the parent pipe: the control
-                        # socket must not be a live keystream.
+                        # Latency only, no keycode: the shell should learn that
+                        # typing happened, not what was typed. Sent on the parent
+                        # pipe only, never the control socket, which is not a
+                        # keystream and could be opened by another local process.
                         emit_pipe({"evt": "key", "latency_ms": lat})
 
     server.close()

@@ -37,6 +37,9 @@ def slug(s):
 
 
 def main(argv):
+    """Detect the pack format in src, slice each key's sample out of it with
+    build_sounds' shared encode/gain helpers, and write the result under
+    ~/.config/omarchy/omaclack/packs/ (packs/mouse/ with --mouse)."""
     args = [a for a in argv[1:]]
     if not args or args[0] in ("-h", "--help"):
         print(__doc__)
@@ -51,6 +54,9 @@ def main(argv):
         tmp = tempfile.mkdtemp(prefix="omaclack-import-")
         with zipfile.ZipFile(src) as z:
             for m in z.infolist():
+                # Zip-slip guard: skip entries whose name would extract outside
+                # tmp (path traversal via "../" or an absolute path), since the
+                # zip is untrusted (a downloaded sound pack).
                 if ".." in m.filename or m.filename.startswith("/"):
                     continue
                 z.extract(m, tmp)
@@ -71,11 +77,14 @@ def main(argv):
     pid = pid or slug(cfg.get("id") or cfg.get("name") or os.path.basename(src.rstrip("/")))
     name = name or cfg.get("name") or pid
     out_root = os.path.join(USER_DIR, "mouse") if mouse else USER_DIR
-    B.OUT = out_root
+    B.OUT = out_root  # build_sounds' clear_pack/link_default/write_pack write relative to B.OUT
     out = os.path.join(out_root, pid)
     B.clear_pack(pid, release=mouse)
 
     codes = {}       # linux code -> (src, start_s, dur_s, rel_start_s, rel_dur_s)
+    # Durations are clamped (250ms press, 200ms release) below: a bogus or
+    # malicious config.json with an absurd span must not make ffmpeg cut
+    # minutes of audio out of the source file.
     if "definitions" in cfg:                       # MechvibesDX
         sprite = os.path.join(src, cfg.get("audio_file", "sound.ogg"))
         names = B.DX_CODES if not mouse else {"MouseLeft": 272, "MouseRight": 273, "MouseMiddle": 274}
@@ -89,6 +98,7 @@ def main(argv):
             codes[code] = (sprite, p0 / 1000, min(p1 - p0, 250) / 1000,
                            None if r0 is None else r0 / 1000, None if r0 is None else min(r1 - r0, 200) / 1000)
     elif cfg.get("key_define_type") == "single" or (cfg.get("defines") and isinstance(next(iter(cfg["defines"].values()), None), list)):
+        # Mechvibes single: one sprite, defines maps code -> [start_ms, dur_ms]
         sprite = os.path.join(src, cfg.get("sound", "sound.ogg"))
         for raw, span in cfg["defines"].items():
             code = B.iohook_code(raw)
@@ -123,8 +133,11 @@ def main(argv):
         if not mouse:
             continue
         if r0 is not None:
+            # Recorded release timing exists: use it, 3dB down so it doesn't
+            # compete with the press.
             B.encode(s, os.path.join(out, "up", "%d.opus" % code), r0, rd, gains[s] - 3.0, pan)
         else:
+            # No release timing in the source: synthesize one from the press.
             B.derive_release(s, os.path.join(out, "up", "%d.opus" % code), st, du, gains[s], pan)
     first = "%d.opus" % (30 if 30 in codes else sorted(codes)[0])
     B.link_default(out, first)

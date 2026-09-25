@@ -29,7 +29,11 @@ N_COLD, COLD_GAP = 5, 4.0
 
 
 def cpu_ms(pid):
+    """utime + stime from /proc/pid/stat, in ms."""
     with open("/proc/%d/stat" % pid) as f:
+        # Split after the last ')' because comm (field 2) can itself contain
+        # spaces or parens; fields 14/15 (utime/stime) are then indices 11/12
+        # of what follows.
         parts = f.read().rsplit(")", 1)[1].split()
     return (int(parts[11]) + int(parts[12])) * 1000.0 / os.sysconf("SC_CLK_TCK")
 
@@ -43,6 +47,9 @@ def rss_kb(pid):
 
 
 def rpc(p, obj):
+    """Send one request on the daemon's stdin and return its reply, skipping
+    any unsolicited "key"/"theme" events interleaved on the same stdout
+    stream. Relies on one request being in flight at a time."""
     p.stdin.write((json.dumps(obj) + "\n").encode())
     p.stdin.flush()
     while True:
@@ -58,8 +65,13 @@ def pct(xs, q):
 
 
 def main(argv):
+    """Drive one daemon build through the metrics listed in the module
+    docstring and print the result as one JSON line; restores the system's
+    default sink and unloads the null sink in `finally` either way."""
     label, cmd = argv[1], argv[2:]
     sink = "omabench"
+    # A private null sink means the daemon's playback never reaches real
+    # speakers and can be captured deterministically for onset timing.
     subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=" + sink], capture_output=True)
     default_sink = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True).stdout.strip()
     subprocess.run(["pactl", "set-default-sink", sink], capture_output=True)
@@ -94,6 +106,8 @@ def main(argv):
                                 "--latency-msec=10", "-d", sink + ".monitor"], stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL)
         import fcntl
+        # Non-blocking so pump() can be polled from the timing loop below
+        # instead of stalling it waiting on parecord.
         fl = fcntl.fcntl(rec.stdout, fcntl.F_GETFL)
         fcntl.fcntl(rec.stdout, fcntl.F_SETFL, fl | os.O_NONBLOCK)
         buf = bytearray()
@@ -106,6 +120,9 @@ def main(argv):
                     if not chunk:
                         break
                     if epoch[0] is None:
+                        # Back-date to when sample 0 was captured: the chunk just
+                        # read already contains len(chunk)/2 s16 mono samples at
+                        # 48kHz recorded before this instant.
                         epoch[0] = time.monotonic() - len(chunk) / 2 / 48000.0
                     buf.extend(chunk)
             except (BlockingIOError, TypeError):
@@ -132,11 +149,11 @@ def main(argv):
         rec.terminate()
         n = len(buf) // 2
         samples = struct.unpack("<%dh" % n, bytes(buf[:n * 2]))
-        onsets, i, thr = [], 0, 1500
+        onsets, i, thr = [], 0, 1500  # thr: well above silence/noise floor, well below a full-scale sample
         while i < n:
             if abs(samples[i]) > thr:
                 onsets.append(epoch[0] + i / 48000.0)
-                i += int(0.15 * 48000)
+                i += int(0.15 * 48000)  # skip the rest of this click's decay so it isn't counted twice
             else:
                 i += 1
         res["onset_found"] = len(onsets)

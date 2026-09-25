@@ -9,6 +9,9 @@ const EV_KEY: u16 = 0x01;
 const EVIOCGNAME: libc::c_ulong = 0x8100_4506; // _IOC(_IOC_READ, 'E', 0x06, 256)
 const EVENT_SIZE: usize = 24; // struct input_event on 64-bit
 
+/// Tracks every currently-open /dev/input/event* fd (read-only) and its device
+/// name. `denied` is true only when every open attempt failed on permission and
+/// nothing at all is open, i.e. no key can ever sound (see scan()).
 pub struct InputReader {
     fds: HashMap<RawFd, String>,   // fd -> path
     names: HashMap<RawFd, String>, // fd -> device name
@@ -24,6 +27,10 @@ impl InputReader {
     pub fn fds(&self) -> Vec<RawFd> { self.fds.keys().copied().collect() }
     pub fn name(&self, fd: RawFd) -> String { self.names.get(&fd).cloned().unwrap_or_default() }
 
+    /// Re-list /dev/input/event*, opening any device not already held (so a
+    /// keyboard plugged in after startup, or one that needed a group membership
+    /// refresh, is picked up without a restart). Throttled to RESCAN_S_PUB so it
+    /// is cheap to call every loop iteration. Read-only, non-blocking, close-on-exec.
     pub fn scan(&mut self) {
         if let Some(t) = self.last_scan {
             if t.elapsed().as_secs_f64() < super::RESCAN_S_PUB { return; }
@@ -52,6 +59,9 @@ impl InputReader {
     }
 
     /// (code, down) for key presses and releases in whatever is readable now.
+    /// One non-blocking read of up to 64 raw events; a read error other than
+    /// "would block", or EOF (device unplugged), drops the fd so a dead handle
+    /// never sits in the poll set.
     pub fn read_events(&mut self, fd: RawFd) -> Vec<(u16, bool)> {
         let mut buf = [0u8; EVENT_SIZE * 64];
         let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
@@ -72,6 +82,12 @@ impl InputReader {
 }
 
 /// Parse packed `struct input_event` bytes (24 bytes each on 64-bit).
+/// Keeps only EV_KEY events with value 0 (up) or 1 (down): autorepeat (value 2)
+/// and every other event type (EV_REL/EV_ABS mouse motion, EV_SYN, LEDs, ...) are
+/// dropped here, before anything reaches Controller::play, so nothing but a
+/// filtered (code, down) pair ever leaves this module. Codes outside the
+/// keyboard range and the mouse-button range are dropped too (e.g. scroll wheel,
+/// joystick-only buttons).
 pub fn parse_events(buf: &[u8]) -> Vec<(u16, bool)> {
     let mut out = Vec::new();
     let mut off = 0usize;
@@ -88,6 +104,8 @@ pub fn parse_events(buf: &[u8]) -> Vec<(u16, bool)> {
     out
 }
 
+// Device name via EVIOCGNAME, best-effort: used only for the per-device press
+// count in "status"/"stats", never for anything security-relevant.
 fn device_name(fd: RawFd) -> String {
     let mut buf = [0u8; 256];
     let r = unsafe { libc::ioctl(fd, EVIOCGNAME as _, buf.as_mut_ptr()) };

@@ -314,7 +314,7 @@ Panel {
         width: parent.width
         wrapMode: Text.WordWrap
         textFormat: Text.PlainText
-        text: "This session cannot read /dev/input. Join the input group (sudo usermod -aG input $USER), then log out and back in."
+        text: "This session cannot read /dev/input, so no key can sound. Join the input group (see README), then log out and back in."
         color: Color.urgent
         font.family: root.mono
         font.pixelSize: Style.font.caption

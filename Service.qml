@@ -42,16 +42,13 @@ Item {
   property var packs: []             // [{id, name, credit, source, user}]
   property var mousePacks: []
   property bool connected: false
-  property bool daemonRunning: false
   property bool inputDenied: false   // daemon could not open /dev/input (not in `input` group)
-  property bool streamOk: false
 
   function metaFor(list, id) {
     for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i]
     return null
   }
   readonly property var currentPackMeta: metaFor(packs, currentPack)
-  readonly property var mousePackMeta: metaFor(mousePacks, mousePack)
 
   // Focused app, for the ignore list.
   readonly property var activeToplevel: ToplevelManager.activeToplevel
@@ -247,9 +244,8 @@ Item {
       splitMarker: "\n"
       onRead: function(line) { root.handleLine(line) }
     }
-    onStarted: root.daemonRunning = true
+    // Crashed or killed: reconnect after a pause; `hello` then resyncs everything.
     onExited: function(code, status) {
-      root.daemonRunning = false
       root.connected = false
       restartTimer.interval = code === 2 ? 1500 : 2000
       restartTimer.restart()
@@ -289,11 +285,9 @@ Item {
     if (Array.isArray(msg.packs)) packs = msg.packs
     if (Array.isArray(msg.mouse_packs)) mousePacks = msg.mouse_packs
     if (msg.evt === "hello") {
-      streamOk = msg.stream === true
       connected = true
       pushState()
     }
-    if (typeof msg.stream === "boolean") streamOk = msg.stream
     if (msg.ok === false && msg.error && String(msg.error).indexOf("default.opus") >= 0) {
       // Configured pack vanished from disk: fall back to the default, else the first one available.
       var err = String(msg.error)

@@ -64,7 +64,7 @@ someone ships that, the `input` group is the real door.
 - x86_64 or aarch64 for the Rust daemon (CI attaches both to GitHub releases);
   anything else runs the Python 3.10+ fallback (stdlib only, needs `pw-play`).
 
-No sudo at runtime, no systemd units, no extra packages.
+No sudo or pkexec is required at runtime; no systemd units, no extra packages.
 
 ## Removal
 
@@ -295,9 +295,27 @@ once the stream reactivated, so that cell is left blank rather than guessed.
 The Rust in-process build spends its memory on pre-decoded samples for the
 two active packs; the Python daemon spends the same on the interpreter.
 
-Build: `cd daemon && cargo build --release && cp target/release/omaclackd
-../bin/omaclackd-x86_64`. Needs libpipewire and libsndfile headers. The
-committed binary is for x86_64; other CPUs fall back to Python automatically.
+### The bundled binary
+
+`bin/omaclackd-x86_64` is the release build of `daemon/` (about 1,400 lines of
+Rust, dependencies pinned in `daemon/Cargo.lock`), committed because
+`omarchy plugin add` installs by cloning and nothing may be downloaded or
+compiled at install time. It links libc, libpipewire and libsndfile (plus the
+codec libraries libsndfile loads), has no network code (`std::net` is never
+imported; its only socket is the Unix control socket in `$XDG_RUNTIME_DIR`),
+and needs no privileges. To check or replace it:
+
+```bash
+cd daemon && cargo build --release
+install -m755 target/release/omaclackd ../bin/.omaclackd-x86_64.new
+mv ../bin/.omaclackd-x86_64.new ../bin/omaclackd-x86_64   # rename, so a running daemon keeps its file
+```
+
+CI (`.github/workflows/ci.yml`) runs every test and builds the same binary for
+x86_64 and aarch64 on each push. Distrust the committed binary? Delete it and
+`bin/omaclackd` falls back to `bin/omaclackd.py`, the stdlib-only Python
+daemon with the same protocol (about twice the key-to-sound latency, see the
+table above). Other CPUs use that fallback automatically.
 
 ## Privacy
 

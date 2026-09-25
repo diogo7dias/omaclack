@@ -5,12 +5,16 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+// Checked in this order; imported packs may ship any of these, shipped packs are
+// always opus. A directory with no default.<ext> in any of these is not a pack.
 const SAMPLE_EXT: [&str; 4] = ["opus", "ogg", "flac", "wav"];
 
 fn default_file(dir: &Path) -> Option<PathBuf> {
     SAMPLE_EXT.iter().map(|e| dir.join(format!("default.{}", e))).find(|p| p.is_file())
 }
 
+/// First root (shipped before user) that has this pack name with a default
+/// sample; presence of `default.<ext>` is what makes a directory a "pack" at all.
 pub fn find_pack_dir(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     roots.iter().map(|r| r.join(name)).find(|d| default_file(d).is_some())
 }
@@ -37,6 +41,10 @@ fn read_json(path: &Path) -> Value {
     std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null)
 }
 
+/// Metadata for the panel's pack picker: display name, credit/source/license
+/// text and switch `kind` from pack.json, plus `user`: true when the pack was
+/// found under the user root (roots[1]) rather than the shipped one (roots[0]),
+/// which is how the panel shows the "." suffix on imported packs.
 pub fn pack_meta(name: &str, roots: &[PathBuf]) -> Value {
     let dir = find_pack_dir(name, roots);
     let meta = dir.as_ref().map(|d| read_json(&d.join("pack.json"))).unwrap_or(Value::Null);
@@ -46,12 +54,19 @@ pub fn pack_meta(name: &str, roots: &[PathBuf]) -> Value {
     json!({"id": name, "name": display, "credit": s("credit"), "source": s("source"), "release": s("release"), "kind": s("kind"), "user": user})
 }
 
+/// Samples for one direction (press or release): files named `<code>.<ext>`
+/// found directly in the directory, the `keys` map from pack.json for codes
+/// that reuse a differently-named file, and a `default` fallback for everything
+/// else. Empty (no `default`) when the directory (e.g. `up/`) does not exist.
 pub struct SampleSet {
     default: Option<PathBuf>,
     files: HashMap<u16, PathBuf>,
 }
 
 impl SampleSet {
+    // Directory scan first (a `<code>.<ext>` file always wins), then the keys
+    // map only fills in codes the scan did not already find, so an explicit
+    // per-code file can never be shadowed by a keys-map alias to it.
     fn load(dir: &Path, keys: &Value) -> Self {
         let default = default_file(dir);
         let mut files = HashMap::new();
@@ -78,6 +93,7 @@ impl SampleSet {
         SampleSet { default, files }
     }
 
+    /// Lookup order: this code's own file, else the shared default sample.
     pub fn sample_for(&self, code: u16) -> Option<&PathBuf> { self.files.get(&code).or(self.default.as_ref()) }
 
     pub fn all_files(&self) -> Vec<PathBuf> {
@@ -87,6 +103,9 @@ impl SampleSet {
     }
 }
 
+/// A loaded pack: press samples (always present), optional release samples
+/// (only mouse packs ship an `up/` directory), and whether this pack wants
+/// stereo panning by key position (`pan_for`).
 pub struct Pack {
     pub name: String,
     pub press: SampleSet,
@@ -117,6 +136,10 @@ pub fn key_pan(code: u16) -> f32 {
 const PAN_DEPTH: f32 = 0.35;
 
 impl Pack {
+    /// Reads pack.json for the optional `keys` map and `pan` flag, then builds
+    /// the press SampleSet and, from `up/`, the release one (present only if
+    /// `up/` itself has a default sample, which is how keyboard packs end up
+    /// with `release: None`: keys sound on press only, see Controller::play).
     pub fn load(name: &str, roots: &[PathBuf]) -> Result<Self, String> {
         let dir = find_pack_dir(name, roots)
             .ok_or_else(|| format!("{}", roots[0].join(name).join("default.opus").display()))?;
@@ -133,6 +156,9 @@ impl Pack {
         if down { self.press.sample_for(code) } else { self.release.as_ref().and_then(|r| r.sample_for(code)) }
     }
 
+    /// -0.35..+0.35 for a pan-enabled pack, else dead centre. Scaled down from
+    /// key_pan's full -1..1 range (PAN_DEPTH) because full stereo separation on
+    /// short percussive clicks reads as harsh rather than spatial.
     pub fn pan_for(&self, code: u16) -> f32 {
         if self.pan { key_pan(code) * PAN_DEPTH } else { 0.0 }
     }

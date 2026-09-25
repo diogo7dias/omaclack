@@ -3,6 +3,7 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
+// 5-minute ring for "top keys" and rhythm; matches README.
 const WINDOW_S: f64 = 300.0;
 
 pub struct Stats {
@@ -14,6 +15,11 @@ pub struct Stats {
 impl Stats {
     pub fn new() -> Self { Stats { times: VecDeque::new(), counts: HashMap::new(), total: 0 } }
 
+    /// Records one keyboard press (mouse buttons are not tracked here, see
+    /// Controller::play). `times` is a ring bounded to WINDOW_S: oldest entries
+    /// are trimmed off the front every call, and `counts` is kept in sync so the
+    /// "top" keys in report() only ever reflect the last five minutes, not the
+    /// whole session. `total` is the one number that survives outside the window.
     pub fn press(&mut self, code: u16, now: f64) {
         self.times.push_back((now, code));
         *self.counts.entry(code).or_insert(0) += 1;
@@ -29,6 +35,12 @@ impl Stats {
         }
     }
 
+    /// The "stats" IPC reply: `kpm` counts presses in the last 60s (not a true
+    /// per-minute rate, just a fixed lookback), `rhythm` buckets the gap between
+    /// consecutive presses into 10 buckets of 60ms each (9th bucket is "540ms+"),
+    /// and `top` is the five most-pressed codes in the current 5-minute window,
+    /// ties broken by keycode for a stable order. No timing or count data ever
+    /// leaves the process; this is only ever read back over the pipe/socket.
     pub fn report(&self, now: f64) -> Value {
         let recent = self.times.iter().filter(|(t, _)| *t >= now - 60.0).count();
         let mut buckets = [0u64; 10];

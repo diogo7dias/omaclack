@@ -25,19 +25,33 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// Linux KEY_* codes below this are keyboard keys; evdev.rs and packs.rs both filter on it.
 pub const KEY_MAX_KEYBOARD: u16 = 0x100;
+/// BTN_LEFT..BTN_TASK: the mouse button range we listen to, everything else on the
+/// device (relative motion, scroll wheel) is never read as a key event.
 pub const BTN_MOUSE_MIN: u16 = 0x110;
 pub const BTN_MOUSE_MAX: u16 = 0x117;
+// Debounce window for the *same* key code only (see KeyFilter::on_press). Absorbs
+// switch chatter/bounce without swallowing fast intentional typing; keys on other
+// codes are never held back.
 const DEBOUNCE_MS: f64 = 30.0;
+// How often to re-scan /dev/input for newly plugged devices.
 const RESCAN_S: f64 = 3.0;
+// evdev.rs reads this; kept as a plain re-export, not `pub` above, so main.rs
+// stays the single source of the default.
 pub const RESCAN_S_PUB: f64 = RESCAN_S;
 const RELEASE_GAIN: f32 = 0.7;   // mouse release relative to the press
 
+/// Where the control socket and its lock file live: `$XDG_RUNTIME_DIR/omaclack`,
+/// falling back to `/tmp/omaclack` when unset (e.g. running outside a session).
 pub fn runtime_dir() -> PathBuf {
     let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(base).join("omaclack")
 }
 
+/// Shipped sound packs: resolved from the running binary's own path
+/// (bin/omaclackd-<arch> -> plugin root -> sounds/), not the working directory,
+/// so it is correct regardless of where the daemon is launched from.
 fn sounds_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
@@ -45,17 +59,23 @@ fn sounds_dir() -> PathBuf {
     exe.parent().and_then(|p| p.parent()).map(|p| p.join("sounds")).unwrap_or_else(|| PathBuf::from("sounds"))
 }
 
+/// User-imported packs: `$XDG_CONFIG_HOME/omarchy/omaclack/packs` (or `~/.config/...`),
+/// outside the plugin directory so `omarchy plugin remove` never deletes them.
 fn user_dir() -> PathBuf {
     let base = std::env::var("XDG_CONFIG_HOME").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".config"));
     base.join("omarchy").join("omaclack").join("packs")
 }
 
+/// Per-key debounce state: last press time (ms) for every code seen so far.
 struct KeyFilter {
     last: HashMap<u16, f64>,
 }
 
 impl KeyFilter {
+    /// True if this press should sound: false if the same code fired again inside
+    /// DEBOUNCE_MS (switch bounce), in which case the timestamp is left unchanged
+    /// so a burst of chatter does not keep extending the window.
     fn on_press(&mut self, code: u16, now_ms: f64) -> bool {
         if let Some(t) = self.last.get(&code) {
             if now_ms - t < DEBOUNCE_MS {
@@ -67,6 +87,9 @@ impl KeyFilter {
     }
 }
 
+/// All daemon state: current packs, playback backend, settings and stats. One
+/// instance, driven by handle() from either the parent pipe or the control socket;
+/// never touched by the evdev read path except through play().
 pub struct Controller {
     player: Box<dyn player::Player>,
     pack_roots: Vec<PathBuf>,
@@ -85,6 +108,8 @@ pub struct Controller {
 }
 
 impl Controller {
+    // Starts with mx-blue / logitech if present, else whatever pack sorts first;
+    // failure to load is silently ignored so a missing/corrupt pack never blocks startup.
     fn new(player: Box<dyn player::Player>, sounds: PathBuf, user: PathBuf) -> Self {
         let pack_roots = vec![sounds.clone(), user.clone()];
         let mouse_roots = vec![sounds.join("mouse"), user.join("mouse")];
@@ -101,6 +126,8 @@ impl Controller {
         c
     }
 
+    // preload() decodes every sample in the pack up front so the first press after
+    // a switch has no decode latency; see player::InProcessPlayer::preload.
     fn load_pack(&mut self, name: &str) -> Result<String, String> {
         let p = packs::Pack::load(name, &self.pack_roots)?;
         self.player.preload(&p);
@@ -117,6 +144,9 @@ impl Controller {
 
     fn now_s(&self) -> f64 { self.epoch.elapsed().as_secs_f64() }
 
+    // Full state snapshot sent on "status", and embedded in every "hello" on connect.
+    // `devices` is a list of evdev device names only (e.g. "Topre keyboard"), never
+    // a keycode or character; `user_dir` exposes the local pack import path, not its contents.
     fn status(&self) -> Value {
         let mut devs: Vec<(&String, &u64)> = self.devices.iter().collect();
         devs.sort_by(|a, b| b.1.cmp(a.1));
@@ -143,6 +173,11 @@ impl Controller {
         velocity_gain(self.velocity, self.last_press.map(|t| now.duration_since(t).as_secs_f32()))
     }
 
+    /// Plays one press or release: picks the sample and pan from the active pack,
+    /// applies volume (with velocity scaling on keyboard presses), and hands it to
+    /// the backend. Also updates in-memory stats and the per-device press count.
+    /// Called both from evdev reads and from the "play"/"theme" IPC commands, so it
+    /// is the single choke point for anything that can make a sound.
     /// Returns the latency in ms from `t0` to the sample being handed to the backend.
     fn play(&mut self, code: u16, t0: Instant, down: bool, device: Option<&str>) -> Option<f64> {
         if !self.enabled { return None; }
@@ -169,6 +204,10 @@ impl Controller {
         Some((Instant::now().duration_since(t0).as_secs_f64() * 1000.0 * 100.0).round() / 100.0)
     }
 
+    // Dispatch for the IPC protocol described in README.md's "IPC protocol"
+    // section; both the parent pipe and the control socket route every incoming
+    // line through this one function. Unknown/malformed input yields {"ok": false},
+    // never a panic (bad JSON from the socket is attacker-reachable, see ipc.rs).
     fn handle(&mut self, msg: &Value) -> Value {
         let cmd = msg.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
         let pct = |v: Option<&Value>, d: i64| v.and_then(|x| x.as_f64()).map(|x| x as i64).unwrap_or(d).clamp(0, 100);
@@ -203,6 +242,7 @@ impl Controller {
             }
             "status" => self.status(),
             "theme" => {
+                // 28 = KEY_ENTER, just a confirmation click
                 self.play(28, Instant::now(), true, None);
                 json!({"ok": true, "evt": "theme", "slug": msg.get("slug").and_then(|s| s.as_str()).unwrap_or("")})
             }
@@ -213,6 +253,9 @@ impl Controller {
     }
 }
 
+// Entry point: takes the control-socket lock (so only one daemon owns it), picks
+// a playback backend, loads default packs, then runs a single poll() loop over
+// evdev fds, the control socket and the parent pipe until told to stop.
 fn main() {
     let mut sock_path = runtime_dir().join("ctl.sock");
     let mut backend = "inprocess".to_string();
@@ -240,6 +283,9 @@ fn main() {
     inputs.scan();
 
     unsafe {
+        // TERM/INT/HUP: set a flag and exit the loop cleanly (flush stats, drop the
+        // socket) rather than dying mid-write. SIGPIPE ignored so a write to a
+        // client that already closed returns EPIPE instead of killing the process.
         libc::signal(libc::SIGTERM, handle_signal as *const () as usize);
         libc::signal(libc::SIGINT, handle_signal as *const () as usize);
         libc::signal(libc::SIGHUP, handle_signal as *const () as usize);
@@ -257,6 +303,8 @@ fn main() {
     // Our stdout now belongs to the shell protocol.
     let _ = std::io::stdout().flush();
 
+    // Single poll() loop: no threads for input/IPC, so every event (key or command)
+    // is handled one at a time and play() can never race with itself.
     let mut running = true;
     while running && !stop_requested() {
         inputs.scan();
@@ -282,6 +330,9 @@ fn main() {
                         server.send(&hello);
                     }
                 }
+                // Client and Pipe below run the same command handling; kept as separate
+                // arms because the socket client and the parent pipe are distinct
+                // channels (a "theme" reply is echoed as an event on both).
                 Role::Client => {
                     let msgs = server.read_messages();
                     for m in msgs {
@@ -300,6 +351,8 @@ fn main() {
                 Role::Pipe => {
                     let msgs = pipe.as_mut().unwrap().read_messages();
                     let eof = pipe.as_ref().unwrap().eof;
+                    // The lifeline: when omarchy-shell exits, our stdin closes, read()
+                    // returns 0, and we exit the loop and shut down. No heartbeat needed.
                     if eof { running = false; }
                     let mut themes: Vec<Value> = Vec::new();
                     for m in msgs {
@@ -337,8 +390,12 @@ fn main() {
     server.close();
 }
 
+// What each pollfd in the main loop's array corresponds to, in the same order.
 enum Role { Input(RawFd), Listener, Client, Pipe }
 
+/// Keyboard volume scaling by typing speed: 80% when relaxed, ramping to 100% as
+/// the gap since the last press shrinks toward 100 ms (dt >= 500 ms is fully relaxed).
+/// Disabled entirely returns 1.0. Mouse presses never call this (see play()).
 fn velocity_gain(enabled: bool, dt_s: Option<f32>) -> f32 {
     if !enabled { return 1.0; }
     match dt_s {
@@ -349,19 +406,27 @@ fn velocity_gain(enabled: bool, dt_s: Option<f32>) -> f32 {
 
 fn pollfd(fd: RawFd) -> libc::pollfd { libc::pollfd { fd, events: libc::POLLIN, revents: 0 } }
 
+// Send only to the parent pipe (used for the "key" latency event, which must
+// never reach the control socket).
 fn emit_pipe(pipe: &mut Option<ipc::LineChannel>, v: &Value) {
     if let Some(p) = pipe.as_mut() { p.send(v); }
 }
 
+// Broadcast to both channels (used for "theme", which both the shell and a
+// socket client may want to see).
 fn emit(server: &mut ipc::CtlServer, pipe: &mut Option<ipc::LineChannel>, v: &Value) {
     server.send(v);
     emit_pipe(pipe, v);
 }
 
+// Signal-safe: the handler only sets a flag, the actual shutdown (flush, close
+// socket) happens back in the normal poll loop, never inside the signal handler.
 static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 extern "C" fn handle_signal(_: libc::c_int) { STOP.store(true, std::sync::atomic::Ordering::SeqCst); }
 fn stop_requested() -> bool { STOP.load(std::sync::atomic::Ordering::SeqCst) }
 
+// Keeps Duration and UnixListener referenced as types (both are only otherwise
+// named indirectly) so the top-of-file imports don't warn as unused; never called.
 #[allow(dead_code)]
 fn _unused(_: Duration, _: &UnixListener) {}
 

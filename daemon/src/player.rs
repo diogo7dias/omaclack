@@ -15,10 +15,17 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+// Cap on live voices/child processes: bounds memory and CPU under a very fast
+// typist or a stuck key, past which the oldest voice is dropped for a new one.
 const MAX_CONCURRENT: usize = 24;
 pub const RATE: u32 = 48000;
+// How long the stream stays active with no live voices before it is put back to
+// sleep, so PipeWire can suspend the sink instead of running silence forever.
 const IDLE_S: f64 = 2.5;
 
+/// One playback backend behind Controller: either spawns `pw-play` per event, or
+/// mixes pre-decoded samples in a persistent PipeWire stream (see the two impls
+/// below).
 pub trait Player {
     fn name(&self) -> &'static str;
     fn play(&mut self, path: &Path, volume: f32, pan: f32);
@@ -48,6 +55,9 @@ impl SpawnPlayer {
 
 impl Player for SpawnPlayer {
     fn name(&self) -> &'static str { "spawn" }
+    // Opportunistically reap finished children before spawning another, so `live`
+    // (and the process table) does not grow unbounded; no pan support (pw-play
+    // has no per-call stereo-position option).
     fn play(&mut self, path: &Path, volume: f32, _pan: f32) {
         let g = if self.muted { 0.0 } else { volume.clamp(0.0, 1.0) };
         if g == 0.0 { return; }
@@ -68,9 +78,13 @@ impl Player for SpawnPlayer {
 
 // ------------------------------------------------------------------ libsndfile
 
+// Mirrors libsndfile's SF_INFO layout; must stay field-for-field compatible.
 #[repr(C)]
 struct SfInfo { frames: i64, samplerate: i32, channels: i32, format: i32, sections: i32, seekable: i32 }
 
+// The only FFI surface in this daemon: three libsndfile calls to decode a sample
+// file. Only ever called on files under the packs directories (shipped or
+// imported by the user), never on attacker-controlled input from the socket.
 #[link(name = "sndfile")]
 extern "C" {
     fn sf_open(path: *const libc::c_char, mode: libc::c_int, info: *mut SfInfo) -> *mut libc::c_void;
@@ -114,16 +128,26 @@ fn decode(path: &Path) -> Option<Arc<Vec<f32>>> {
 
 // ------------------------------------------------------------------ in-process
 
+// One in-flight sample: shared decoded audio, playback position and this
+// press's own volume/pan (samples are shared read-only across voices; only
+// `pos` advances per voice).
 struct Voice { data: Arc<Vec<f32>>, pos: usize, gain: f32, pan: f32 }
 
+/// Shared between the main thread and the PipeWire realtime thread behind a
+/// Mutex: the live voice list, and the bookkeeping the idle timer needs.
 pub struct Mix {
     voices: Vec<Voice>,
     last_activity: Instant,
     active: bool,          // stream currently active (set from the PipeWire thread)
 }
 
+// Commands from the main thread to the PipeWire thread over a lock-free channel.
 enum Msg { Wake, Sleep, Quit }
 
+/// Owns the PipeWire stream via a dedicated thread (pipewire's main loop wants
+/// to own its thread) and the decode cache. Talks to that thread only through
+/// `tx` (Msg) and the shared `mix`/`stream_on` state, never by calling PipeWire
+/// APIs directly from here.
 pub struct InProcessPlayer {
     muted: bool,
     cache: HashMap<PathBuf, Arc<Vec<f32>>>,
@@ -135,6 +159,9 @@ pub struct InProcessPlayer {
 }
 
 impl InProcessPlayer {
+    // Spawns the PipeWire thread and blocks (up to 3s) on its ready signal, so a
+    // broken PipeWire install fails fast here and main() falls back to
+    // SpawnPlayer instead of running with a half-initialized backend.
     pub fn new() -> Result<Self, String> {
         let mix = Arc::new(Mutex::new(Mix { voices: Vec::new(), last_activity: Instant::now(), active: false }));
         let ok = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -155,6 +182,7 @@ impl InProcessPlayer {
         Ok(InProcessPlayer { muted: false, cache: HashMap::new(), mix, stream_on, tx, thread: Some(thread), ok })
     }
 
+    // Decode-once, keep-forever (until preload() evicts it) cache, keyed by path.
     fn sample(&mut self, path: &Path) -> Option<Arc<Vec<f32>>> {
         if let Some(s) = self.cache.get(path) { return Some(s.clone()); }
         let s = decode(path)?;
@@ -166,6 +194,10 @@ impl InProcessPlayer {
 impl Player for InProcessPlayer {
     fn name(&self) -> &'static str { "inprocess" }
 
+    // Push a voice onto the shared mix (the RT thread's process callback picks it
+    // up on its next cycle) and wake the stream only if it was asleep: every
+    // other press while already active is just a Vec push under the mutex, no
+    // channel send, keeping the hot path cheap.
     fn play(&mut self, path: &Path, volume: f32, pan: f32) {
         let g = if self.muted { 0.0 } else { volume.clamp(0.0, 1.0) };
         if g == 0.0 { return; }
@@ -183,6 +215,9 @@ impl Player for InProcessPlayer {
         }
     }
 
+    // Called every poll loop iteration; asks the PipeWire thread to deactivate
+    // the stream once nothing has played for IDLE_S. The actual set_active(false)
+    // happens over there (see pw_thread), not here.
     fn tick(&mut self) {
         if !self.stream_on.load(std::sync::atomic::Ordering::Relaxed) { return; }
         let sleep = {
@@ -214,6 +249,8 @@ impl Player for InProcessPlayer {
 
     fn stream_ok(&self) -> bool { self.ok.load(std::sync::atomic::Ordering::Relaxed) }
 
+    // Tell the PipeWire thread to quit its main loop and wait for it to exit
+    // cleanly, so the stream/context/core are torn down instead of just dropped.
     fn shutdown(&mut self) {
         let _ = self.tx.send(Msg::Quit);
         if let Some(t) = self.thread.take() { let _ = t.join(); }
@@ -222,11 +259,16 @@ impl Player for InProcessPlayer {
 
 // ------------------------------------------------------------------ PipeWire thread
 
+// Lives only inside the PipeWire thread; `_listener` must stay alive as long as
+// `stream` or its callbacks stop firing.
 struct StreamState {
     stream: pipewire::stream::StreamRc,
     _listener: pipewire::stream::StreamListener<Arc<Mutex<Mix>>>,
 }
 
+// Serializes the one audio format we ever offer PipeWire: 2ch F32LE at RATE.
+// No negotiation over multiple formats; decode() already converts every sample
+// to this exact layout, so the stream only ever needs to advertise it once.
 fn format_pod() -> Vec<u8> {
     use pipewire::spa;
     let mut info = spa::param::audio::AudioInfoRaw::new();
@@ -247,6 +289,11 @@ fn format_pod() -> Vec<u8> {
     ).unwrap().0.into_inner()
 }
 
+/// Creates the stream and registers its two callbacks: `state_changed` tracks
+/// whether PipeWire reports an error (surfaced to the panel as `stream_ok`),
+/// `process` is the realtime audio callback that actually mixes and writes
+/// samples (see its own comments below). MEDIA_ROLE "Game" asks PipeWire for
+/// low-latency scheduling appropriate to short percussive sounds.
 fn make_stream(core: &pipewire::core::CoreRc, mix: Arc<Mutex<Mix>>,
                ok: Arc<std::sync::atomic::AtomicBool>) -> Result<StreamState, pipewire::Error> {
     use pipewire as pw;
@@ -325,6 +372,11 @@ fn make_stream(core: &pipewire::core::CoreRc, mix: Arc<Mutex<Mix>>,
     Ok(StreamState { stream, _listener: listener })
 }
 
+/// Runs for the daemon's whole lifetime on its own thread: connects to
+/// PipeWire, builds the stream, then runs `mainloop.run()` until Msg::Quit.
+/// Reports readiness (or a connect/stream error) once via `ready` so
+/// InProcessPlayer::new can fail fast instead of returning a player that will
+/// never actually make sound.
 fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
              ready: std::sync::mpsc::Sender<Result<(), String>>, ok: Arc<std::sync::atomic::AtomicBool>,
              stream_on: Arc<std::sync::atomic::AtomicBool>) {

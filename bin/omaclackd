@@ -4,6 +4,8 @@
 # (one pw-play per key, ~48 ms). Same protocol either way.
 here=$(dirname "$0")
 bin="$here/omaclackd-$(uname -m)"
+# OMACLACK_PYTHON forces the stdlib fallback even when a matching Rust binary
+# is present, for testing the fallback path on a CPU that also ships a build.
 if [ -x "$bin" ] && [ -z "$OMACLACK_PYTHON" ]; then
   exec "$bin" "$@"
 fi
