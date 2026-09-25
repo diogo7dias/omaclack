@@ -397,6 +397,8 @@ class InputReader:
                 self.denied = True
             except OSError:
                 pass
+        # Denied means no key can sound; logind may grant some devices without the group.
+        self.denied = self.denied and not self.fds
 
     @staticmethod
     def device_name(fd):

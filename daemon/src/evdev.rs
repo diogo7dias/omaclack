@@ -46,6 +46,9 @@ impl InputReader {
             self.names.insert(fd, device_name(fd));
             self.fds.insert(fd, path);
         }
+        // Denied means no key can sound. logind grants the active seat some
+        // devices without the input group, so a refused extra is not that.
+        self.denied = self.denied && self.fds.is_empty();
     }
 
     /// (code, down) for key presses and releases in whatever is readable now.
