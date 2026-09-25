@@ -31,9 +31,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## MechvibesDX (hainguyents13/mechvibes-dx) — every keyboard pack
+## MechvibesDX (hainguyents13/mechvibes-dx) and Mechvibes (hainguyents13/mechvibes)
 
-mx-black, mx-blue, mx-brown, mx-red, eg-purple, eg-oreo, topre.
+MechvibesDX: mx-black, mx-blue, mx-brown, mx-red, eg-purple, eg-oreo, topre,
+mx-black-pbt, mx-blue-pbt, mx-brown-pbt. Mechvibes (MIT, Copyright (c) 2021
+Hai Nguyen, same terms as below): mx-red-pbt, nk-cream (recorded by Ryan).
 
 ```
 MIT License
@@ -58,3 +60,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## bucklespring (zevv/bucklespring) — model-m
+
+IBM Model M samples, Copyright 2016 Ico Doornekamp, GPL-2.0. The samples in
+sounds/model-m are re-encoded (sliced, levelled, panned, Opus) from the `wav/`
+folder of https://github.com/zevv/bucklespring and remain under GPL-2.0; the
+full text is in `LICENSE-GPL-2.0.txt` next to this file. The rest of Omaclack
+stays MIT; the Model M pack is an aggregate, not linked code.

@@ -1,13 +1,13 @@
 # Omaclack
 
 Mechanical keyboard and mouse click sounds for [Omarchy](https://omarchy.org)
-(Quattro shell). Seven keyboard packs and four mouse packs cut from real
+(Quattro shell). Thirteen keyboard packs and four mouse packs cut from real
 switch and button recordings: every key is its own sample, keys sound on
 press, panned by key position;
 mouse buttons click on press and release. The default Rust daemon mixes into one PipeWire stream; other CPUs
 fall back to one `pw-play` per event. Everything stays on this machine: no
-network, no logging, no keystrokes written to disk. A 1.4 MB clone, 5.5 MB on
-disk (the packs are 677 KB of audio in 693 files, so most of that is your
+network, no logging, no keystrokes written to disk. A 2.3 MB clone, 8.7 MB on
+disk (the packs are 1.4 MB of audio in 1,345 files, so most of that is your
 filesystem rounding each one up to a block).
 
 ```bash
@@ -18,8 +18,11 @@ Bar widget with the same Nerd Font keyboard glyph style as the shell's own
 icons; it dims while sound is off or muted. Left-click opens the panel,
 right-click toggles, the wheel nudges keyboard volume. The panel is one page:
 
-- keyboard: volume, pack, velocity (louder when you type fast), plus a hint
-  for the keyboard you are actually typing on
+- live: a keycap that dips and a level strip that scrolls on every sounded
+  press (the shell only ever learns that a key sounded, never which)
+- keyboard: volume, packs grouped by switch family (clicky, tactile, linear,
+  buckling spring, yours); picking one types a short phrase in it, velocity
+  (louder when you type fast)
 - mouse: on/off, pack and volume of its own
 - quiet: mute while any app records the microphone, quiet hours, and apps to
   ignore by Wayland app id
@@ -44,7 +47,8 @@ The helper reads `/dev/input/event*` directly. Your user needs the `input` group
 sudo usermod -aG input "$USER"   # then log out and back in
 ```
 
-Until then the panel shows `no /dev/input access` and nothing plays.
+Until then the panel says the session cannot read `/dev/input` and nothing
+plays. Joining the group only counts for sessions started afterwards.
 
 Wayland clients cannot hear every key; that is a compositor security rule, not
 an Omaclack limitation. Hyprland's Lua `input.keyboard.key` event exists but
@@ -164,7 +168,7 @@ printf '{"cmd":"play","key":57}\n{"cmd":"quit"}\n' | nc -U "$sock"
 ```
 sounds/<pack>/<code>.opus        press   (stereo 48 kHz Opus, ~1 KB, panned by key position)
 sounds/<pack>/default.opus       fallback for unmapped keys
-sounds/<pack>/pack.json          name, credit, source, license, optional keys map
+sounds/<pack>/pack.json          name, credit, source, license, kind (switch family), optional keys map
 sounds/mouse/<pack>/...          left/right/middle(.opus) + up/ for the release,
                                  release: recorded|derived, keys map to BTN_* codes
 ```
@@ -181,21 +185,32 @@ tools/omaclack-import ~/Downloads/clicks --mouse --name "My mouse"  # mouse
 
 Then click "rescan packs" in the panel. Needs `ffmpeg`.
 
-### Keyboard packs (7)
+### Keyboard packs (13)
 
-| pack | name | character |
-|---|---|---|
-| `mx-blue` | Cherry MX Blue | clicky |
-| `mx-brown` | Cherry MX Brown | tactile |
-| `mx-red` | Cherry MX Red | light linear |
-| `mx-black` | Cherry MX Black | heavy linear, deeper than red |
-| `eg-purple` | Everglide Crystal Purple | clicky, tighter than MX Blue |
-| `eg-oreo` | Everglide Oreo | creamy linear, short hits |
-| `topre` | Topre Purple Hybrid | thocky electrocapacitive |
+| pack | name | kind | character |
+|---|---|---|---|
+| `mx-blue` | Cherry MX Blue | clicky | ABS caps |
+| `mx-blue-pbt` | Cherry MX Blue PBT | clicky | same switch, denser PBT caps |
+| `eg-purple` | Everglide Crystal Purple | clicky | tighter than MX Blue |
+| `mx-brown` | Cherry MX Brown | tactile | ABS caps |
+| `mx-brown-pbt` | Cherry MX Brown PBT | tactile | PBT caps |
+| `topre` | Topre Purple Hybrid | tactile | thocky electrocapacitive |
+| `mx-red` | Cherry MX Red | linear | light |
+| `mx-red-pbt` | Cherry MX Red PBT | linear | light, PBT caps |
+| `mx-black` | Cherry MX Black | linear | heavy, deeper than red |
+| `mx-black-pbt` | Cherry MX Black PBT | linear | heavy, PBT caps |
+| `eg-oreo` | Everglide Oreo | linear | creamy, short hits |
+| `nk-cream` | NovelKeys Cream | linear | self-lubricating POM, soft |
+| `model-m` | IBM Model M | buckling spring | the 1980s original |
 
-All seven come from [MechvibesDX](https://github.com/hainguyents13/mechvibes-dx)
-sprites, where all 99 keys are recorded separately, so no two neighbouring
-keys repeat the same sample.
+Every pack has each key recorded on its own, so no two neighbouring keys
+repeat the same sample: the MX, Everglide and Topre packs are sliced from
+[MechvibesDX](https://github.com/hainguyents13/mechvibes-dx) and
+[Mechvibes](https://github.com/hainguyents13/mechvibes) sprites, NovelKeys
+Cream is Mechvibes' letter-by-letter recording by Ryan, and the Model M is
+[bucklespring](https://github.com/zevv/bucklespring)'s sampling of a real
+IBM Model M, one file per Linux keycode. Keys louder than their pack's median
+are trimmed down to it so one hot recording does not jump out.
 
 ### Mouse packs (4)
 
@@ -211,20 +226,23 @@ click is one sound. Only real button recordings ship; the effect-style packs
 (ping, chat, vibrate, wooden) were dropped because they do not sound like a
 mouse.
 
-Rebuild everything from upstream checkouts with
-`tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>` (needs
+Rebuild from upstream checkouts with
+`tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone> <bucklespring> [pack ...]`;
+name packs to rebuild only those (needs
 `ffmpeg` and `libsndfile`, build-time only; every file is checked to open in
 libsndfile because that is what `pw-play` decodes with).
 
 ## Credits
 
-- **MechvibesDX** by [hainguyents13](https://github.com/hainguyents13), MIT.
-  Every keyboard pack is sliced from its sprites using its press timings.
+- **MechvibesDX** and **Mechvibes** by [hainguyents13](https://github.com/hainguyents13), MIT.
+  The MX, Everglide, Topre and NovelKeys Cream packs, sliced using their press timings.
+- **bucklespring** by [Ico Doornekamp](https://github.com/zevv/bucklespring),
+  GPL-2.0. The IBM Model M pack; its samples stay under GPL-2.0.
 - **Omarchy Typetone** by [phuclh](https://github.com/phuclh/omarchy-typetone),
   MIT. The mouse packs are its `mouse-sounds/` renders of CC0 Freesound
   recordings by OwlStorm, Katsuhira and Six Ways.
 
-Both licenses are reproduced in `sounds/LICENSES.md`.
+All three licenses are reproduced in `sounds/LICENSES.md`.
 
 ## Development
 
@@ -233,7 +251,7 @@ python3 -m unittest discover -s tests            # Python daemon internals + pro
 OMACLACKD_BIN=bin/omaclackd-x86_64 python3 -m unittest discover -s tests   # protocol tests against the Rust build
 cd daemon && cargo test                          # packs, velocity, stats, evdev unit tests
 tools/bench_daemon.py rust bin/omaclackd-x86_64  # startup, footprint, key-to-sound onset
-tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>   # re-import all packs (ffmpeg)
+tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone> <bucklespring> [pack ...]   # re-import packs (ffmpeg)
 tools/omaclack-import <folder-or-zip> [--mouse]  # add a pack to ~/.config/omarchy/omaclack/packs
 tools/dev-reload                                 # nudge the shell when the plugin dir is a symlink
 ```

@@ -1,0 +1,9 @@
+{
+  "credit": "bucklespring by Ico Doornekamp",
+  "kind": "buckling spring",
+  "license": "GPL-2.0",
+  "name": "IBM Model M",
+  "origin": "wav",
+  "source": "https://github.com/zevv/bucklespring",
+  "stereo": true
+}

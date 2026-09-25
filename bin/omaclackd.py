@@ -92,7 +92,7 @@ def pack_meta(name, roots):
         pass
     return {"id": name, "name": str(meta.get("name") or name),
             "credit": str(meta.get("credit") or ""), "source": str(meta.get("source") or ""),
-            "release": str(meta.get("release") or ""),
+            "release": str(meta.get("release") or ""), "kind": str(meta.get("kind") or ""),
             "user": bool(d and not d.startswith(SOUNDS_DIR))}
 
 

@@ -125,7 +125,7 @@ class PackTest(unittest.TestCase):
     def test_meta(self):
         m = D.pack_meta("p", self.roots)
         self.assertEqual(m, {"id": "p", "name": "Pack P", "credit": "someone", "source": "https://x",
-                             "release": "recorded", "user": True})
+                             "release": "recorded", "kind": "", "user": True})
         self.assertEqual(D.pack_meta("mine", self.roots)["name"], "mine")
 
     def test_missing_default_raises(self):
@@ -224,7 +224,8 @@ class ControllerTest(unittest.TestCase):
 
 
 class SoundPacksTest(unittest.TestCase):
-    PACKS = ["eg-oreo", "eg-purple", "mx-black", "mx-blue", "mx-brown", "mx-red", "topre"]
+    PACKS = ["eg-oreo", "eg-purple", "model-m", "mx-black", "mx-black-pbt", "mx-blue", "mx-blue-pbt",
+             "mx-brown", "mx-brown-pbt", "mx-red", "mx-red-pbt", "nk-cream", "topre"]
     MOUSE = ["crisp", "logitech", "razer", "soft"]
 
     def test_every_pack_is_credited_opus_and_only_mouse_has_release(self):
@@ -234,7 +235,7 @@ class SoundPacksTest(unittest.TestCase):
             d = os.path.join(SOUNDS, p)
             meta = json.load(open(os.path.join(d, "pack.json")))
             mouse = p.startswith("mouse/")
-            for k in ("name", "credit", "source", "license") + (("release",) if mouse else ()):
+            for k in ("name", "credit", "source", "license") + (("release",) if mouse else ("kind",)):
                 self.assertTrue(meta.get(k), "%s missing %s" % (p, k))
             self.assertTrue(os.path.isfile(os.path.join(d, "default.opus")), p)
             self.assertEqual(os.path.isdir(os.path.join(d, "up")), mouse, p)

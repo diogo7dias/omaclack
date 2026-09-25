@@ -41,7 +41,6 @@ Item {
   // ---- daemon state (live) ----
   property var packs: []             // [{id, name, credit, source, user}]
   property var mousePacks: []
-  property var devices: []           // keyboard names that produced presses, busiest first
   property bool connected: false
   property bool daemonRunning: false
   property bool inputDenied: false   // daemon could not open /dev/input (not in `input` group)
@@ -157,7 +156,7 @@ Item {
     save()
   }
   function denylistText() { return denylist.join(", ") }
-  function preview(key) { send({ cmd: "play", key: key === undefined ? 30 : key }) }
+  function preview(key) { send({ cmd: "play", key: key === undefined ? 30 : key }); keyPressed() }
   // Cheap re-list: status re-scans the pack directories. Unlike refreshPacks()
   // it leaves the samples the daemon already decoded alone.
   function pollPacks() { send({ cmd: "status" }) }
@@ -168,21 +167,23 @@ Item {
     if (mousePack) send({ cmd: "mousepack", pack: mousePack })
   }
 
-  // Hardware hint: suggest a pack for the keyboard that is actually typing.
-  readonly property string mainDevice: devices.length ? devices[0] : ""
-  readonly property var deviceHint: {
-    var n = mainDevice.toLowerCase()
-    if (!n) return null
-    var rules = [
-      [/at translated set 2|apple internal|thinkpad|laptop/, "mx-red", "laptop keyboard: try a quiet linear"],
-      [/hhkb|realforce|topre|leopold fc660c/, "topre", "Topre board detected"],
-      [/keychron|nuphy|ducky|glorious|wooting|varmilo|akko|leopold|drop|corsair|razer|logitech g|steelseries|hyperx|epomaker|royal kludge|rk/, "mx-brown", "mechanical board detected"],
-    ]
-    for (var i = 0; i < rules.length; i++) {
-      if (rules[i][0].test(n) && metaFor(packs, rules[i][1])) return { pack: rules[i][1], text: rules[i][2] }
+  // Audition: a few keys typed with a human rhythm say more about a pack than
+  // one press. Keycodes spell "typing", then space.
+  readonly property var auditionKeys: [20, 21, 25, 23, 49, 34, 57]
+  readonly property var auditionGaps: [0, 95, 80, 120, 70, 105, 140]
+  property int auditionStep: 0
+  Timer {
+    id: auditionTimer
+    onTriggered: {
+      root.preview(root.auditionKeys[root.auditionStep])
+      root.auditionStep++
+      if (root.auditionStep < root.auditionKeys.length) { interval = root.auditionGaps[root.auditionStep]; start() }
     }
-    return null
   }
+  function audition() { auditionStep = 0; auditionTimer.interval = 1; auditionTimer.restart() }
+
+  // Every press the daemon sounds (latency only, never the key), for the panel's live keycap.
+  signal keyPressed()
 
   // ---- persistence ----
   property bool configLoaded: false
@@ -282,9 +283,9 @@ Item {
     var msg
     try { msg = JSON.parse(line) } catch (e) { return }
     if (!msg) return
-    if (msg.evt === "key" || msg.evt === "theme") return
+    if (msg.evt === "key") { keyPressed(); return }
+    if (msg.evt === "theme") return
     if (typeof msg.denied === "boolean") inputDenied = msg.denied
-    if (Array.isArray(msg.devices)) devices = msg.devices
     if (Array.isArray(msg.packs)) packs = msg.packs
     if (Array.isArray(msg.mouse_packs)) mousePacks = msg.mouse_packs
     if (msg.evt === "hello") {

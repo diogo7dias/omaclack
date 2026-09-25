@@ -1,0 +1,9 @@
+{
+  "credit": "Mechvibes",
+  "kind": "linear",
+  "license": "MIT",
+  "name": "Cherry MX Red PBT",
+  "origin": "src/audio/cherrymx-red-pbt",
+  "source": "https://github.com/hainguyents13/mechvibes",
+  "stereo": true
+}

@@ -43,7 +43,7 @@ pub fn pack_meta(name: &str, roots: &[PathBuf]) -> Value {
     let s = |k: &str| meta.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let display = { let n = s("name"); if n.is_empty() { name.to_string() } else { n } };
     let user = dir.as_ref().map(|d| !d.starts_with(&roots[0])).unwrap_or(false);
-    json!({"id": name, "name": display, "credit": s("credit"), "source": s("source"), "release": s("release"), "user": user})
+    json!({"id": name, "name": display, "credit": s("credit"), "source": s("source"), "release": s("release"), "kind": s("kind"), "user": user})
 }
 
 pub struct SampleSet {

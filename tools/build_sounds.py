@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Import sound packs into sounds/.
 
-Usage: tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone>
-       (paths to checkouts of the four upstream repos; only mechvibes-dx and
-       typetone are read unless MV_PACKS or KB_PACKS below are filled back in)
+Usage: tools/build_sounds.py <mechvibes> <mechvibes-dx> <kbsim> <typetone> <bucklespring> [pack ...]
+       (paths to checkouts of the five upstream repos; kbsim is only read if
+       KB_PACKS below is filled back in). Name packs to rebuild only those;
+       with none, every pack is rebuilt.
 
 Layout per pack:
   sounds/<pack>/<code>.opus        key press, stereo 48 kHz Opus, panned by key position
@@ -32,6 +33,7 @@ MECHVIBES = "https://github.com/hainguyents13/mechvibes"
 MECHVIBES_DX = "https://github.com/hainguyents13/mechvibes-dx"
 KBSIM = "https://github.com/tplai/kbsim"
 TYPETONE = "https://github.com/phuclh/omarchy-typetone"
+BUCKLESPRING = "https://github.com/zevv/bucklespring"
 
 # ------------------------------------------------------------------ pack lists
 
@@ -44,10 +46,31 @@ DX_PACKS = [
     ("eg-crystal-purple", "eg-purple", "Everglide Crystal Purple"),
     ("eg-oreo", "eg-oreo", "Everglide Oreo"),
     ("topre-purple-hybrid-pbt", "topre", "Topre Purple Hybrid"),
+    ("cherrymx-black-pbt", "mx-black-pbt", "Cherry MX Black PBT"),
+    ("cherrymx-blue-pbt", "mx-blue-pbt", "Cherry MX Blue PBT"),
+    ("cherrymx-brown-pbt", "mx-brown-pbt", "Cherry MX Brown PBT"),
 ]
-# Old Mechvibes packs: none shipped any more.
-MV_PACKS = []
-MV_MULTI_PACKS = []
+# Old Mechvibes sprites: only the one MechvibesDX dropped.
+MV_PACKS = [
+    ("cherrymx-red-pbt", "mx-red-pbt", "Cherry MX Red PBT"),
+]
+# Old Mechvibes folder-of-wavs packs: letters recorded one by one.
+MV_MULTI_PACKS = [
+    ("nk-cream", "nk-cream", "NovelKeys Cream"),
+]
+# bucklespring: every key of an IBM Model M recorded on its own, named by Linux keycode.
+BS_PACKS = [
+    ("model-m", "IBM Model M"),
+]
+# Switch family, shown as the pack's group in the panel.
+KIND = {
+    "mx-blue": "clicky", "mx-blue-pbt": "clicky", "eg-purple": "clicky",
+    "mx-brown": "tactile", "mx-brown-pbt": "tactile", "topre": "tactile",
+    "mx-red": "linear", "mx-red-pbt": "linear", "mx-black": "linear", "mx-black-pbt": "linear",
+    "eg-oreo": "linear", "nk-cream": "linear",
+    "model-m": "buckling spring",
+}
+ONLY = set()   # pack ids named on the command line; empty = all
 # kbsim: five row samples per pack, so every key on a row sounds identical.
 # None shipped any more; the builder stays for anyone who wants them back.
 KB_PACKS = []
@@ -166,6 +189,29 @@ def peak_gain(src, start=None, dur=None):
     return (-1.0 - float(m.group(1))) if m else 0.0
 
 
+def rms_db(src, start=None, dur=None):
+    cmd = ["ffmpeg", "-v", "info"]
+    if start is not None:
+        cmd += ["-ss", "%.3f" % start, "-t", "%.3f" % dur]
+    cmd += ["-i", src, "-af", "astats=measure_perchannel=none", "-f", "null", "-"]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    m = re.findall(r"RMS level dB: (-?[\d.]+)", r.stderr)
+    return float(m[-1]) if m else None
+
+
+def level(cuts):
+    """Per-key gain trim: keys louder than the pack's median RMS come down to it,
+    quieter ones stay, so one hot recording does not jump out while typing."""
+    rms = {k: rms_db(*c) for k, c in cuts.items()}
+    vals = sorted(v for v in rms.values() if v is not None)
+    med = vals[len(vals) // 2] if vals else 0.0
+    return {k: min(0.0, med - v) if v is not None else 0.0 for k, v in rms.items()}
+
+
+def wanted(pid):
+    return not ONLY or pid in ONLY
+
+
 PAN_DEPTH = 0.35   # 0 = mono, 1 = hard pan
 
 
@@ -217,6 +263,8 @@ def link_default(d, pick):
 
 def write_pack(rel, meta):
     d = os.path.join(OUT, rel)
+    if rel in KIND:
+        meta["kind"] = KIND[rel]
     with open(os.path.join(d, "pack.json"), "w") as f:
         json.dump(meta, f, indent=2, sort_keys=True)
         f.write("\n")
@@ -239,18 +287,23 @@ def clear_pack(rel, release=False):
 
 def build_dx(root):
     for folder, pid, name in DX_PACKS:
+        if not wanted(pid):
+            continue
         src_dir = os.path.join(root, "soundpacks", "keyboard", folder)
         cfg = json.load(open(os.path.join(src_dir, "config.json")))
         sprite = os.path.join(src_dir, cfg["audio_file"])
         clear_pack(pid)
         out = os.path.join(OUT, pid)
         gain = peak_gain(sprite)
+        cuts = {}
         for kname, d in cfg["definitions"].items():
             code = DX_CODES.get(kname)
-            if code is None:
-                continue
-            p0, p1 = d["timing"][0]
-            encode(sprite, os.path.join(out, "%d.opus" % code), p0 / 1000, min(p1 - p0, 250) / 1000, gain, key_pan(code))
+            if code is not None:
+                p0, p1 = d["timing"][0]
+                cuts[code] = (sprite, p0 / 1000, min(p1 - p0, 250) / 1000)
+        trim = level(cuts)
+        for code, (src, t0, dur) in cuts.items():
+            encode(src, os.path.join(out, "%d.opus" % code), t0, dur, gain + trim[code], key_pan(code))
         link_default(out, "30.opus")
         write_pack(pid, {"name": name, "credit": "Mechvibes", "source": MECHVIBES_DX,
                          "origin": "soundpacks/keyboard/" + folder, "license": "MIT", "stereo": True})
@@ -258,18 +311,22 @@ def build_dx(root):
 
 def build_mv(root):
     for folder, pid, name in MV_PACKS:
+        if not wanted(pid):
+            continue
         src_dir = os.path.join(root, "src", "audio", folder)
         cfg = json.load(open(os.path.join(src_dir, "config.json")))
         sprite = os.path.join(src_dir, cfg["sound"])
         clear_pack(pid)
         out = os.path.join(OUT, pid)
         gain = peak_gain(sprite)
+        cuts = {}
         for raw, span in cfg["defines"].items():
             code = iohook_code(raw)
-            if code is None or not isinstance(span, list):
-                continue
-            encode(sprite, os.path.join(out, "%d.opus" % code), span[0] / 1000, min(span[1], 250) / 1000,
-                   gain, key_pan(code))
+            if code is not None and isinstance(span, list):
+                cuts[code] = (sprite, span[0] / 1000, min(span[1], 250) / 1000)
+        trim = level(cuts)
+        for code, (src, t0, dur) in cuts.items():
+            encode(src, os.path.join(out, "%d.opus" % code), t0, dur, gain + trim[code], key_pan(code))
         link_default(out, "30.opus")
         write_pack(pid, {"name": name, "credit": "Mechvibes", "source": MECHVIBES,
                          "origin": "src/audio/" + folder, "license": "MIT", "stereo": True})
@@ -277,20 +334,23 @@ def build_mv(root):
 
 def build_mv_multi(root):
     for folder, pid, name in MV_MULTI_PACKS:
+        if not wanted(pid):
+            continue
         src_dir = os.path.join(root, "src", "audio", folder)
         cfg = json.load(open(os.path.join(src_dir, "config.json")))
         clear_pack(pid)
         out = os.path.join(OUT, pid)
         files = sorted(set(v for v in cfg["defines"].values() if isinstance(v, str)))
         gain = min(peak_gain(os.path.join(src_dir, f)) for f in files)
+        cuts = {}
         for raw, fn in cfg["defines"].items():
             code = iohook_code(raw)
-            if code is None or not isinstance(fn, str):
-                continue
-            src = os.path.join(src_dir, fn)
-            if not os.path.isfile(src):
-                continue
-            encode(src, os.path.join(out, "%d.opus" % code), 0.0, 0.25, gain, key_pan(code))
+            src = os.path.join(src_dir, fn) if isinstance(fn, str) else ""
+            if code is not None and os.path.isfile(src):
+                cuts[code] = (src, 0.0, 0.25)
+        trim = level(cuts)
+        for code, (src, t0, dur) in cuts.items():
+            encode(src, os.path.join(out, "%d.opus" % code), t0, dur, gain + trim[code], key_pan(code))
         link_default(out, "30.opus")
         write_pack(pid, {"name": name, "credit": "Mechvibes (recorded by Ryan)", "source": MECHVIBES,
                          "origin": "src/audio/" + folder, "license": "MIT", "stereo": True})
@@ -298,6 +358,8 @@ def build_mv_multi(root):
 
 def build_kbsim(root):
     for folder, pid, name in KB_PACKS:
+        if not wanted(pid):
+            continue
         base = os.path.join(root, "src", "assets", "audio", folder)
         press = os.path.join(base, "press")
         clear_pack(pid)
@@ -321,12 +383,34 @@ def build_kbsim(root):
                          "stereo": True, "pan": True, "keys": keys})
 
 
+def build_bucklespring(root):
+    for pid, name in BS_PACKS:
+        if not wanted(pid):
+            continue
+        clear_pack(pid)
+        out = os.path.join(OUT, pid)
+        cuts = {}
+        for fn in sorted(os.listdir(os.path.join(root, "wav"))):
+            m = re.fullmatch(r"([0-9a-f]{2})-0\.wav", fn)
+            if m and m.group(1) != "ff":
+                cuts[int(m.group(1), 16)] = (os.path.join(root, "wav", fn), 0.0, 0.22)
+        gain = min(peak_gain(c[0]) for c in cuts.values())
+        trim = level(cuts)
+        for code, (src, t0, dur) in cuts.items():
+            encode(src, os.path.join(out, "%d.opus" % code), t0, dur, gain + trim[code], key_pan(code))
+        link_default(out, "30.opus")
+        write_pack(pid, {"name": name, "credit": "bucklespring by Ico Doornekamp", "source": BUCKLESPRING,
+                         "origin": "wav", "license": "GPL-2.0", "stereo": True})
+
+
 MOUSE_KEYS = {"272": "left.opus", "273": "right.opus", "274": "middle.opus",
               "275": "middle.opus", "276": "middle.opus"}
 
 
 def build_tt_mouse(root):
     for folder, pid, name, credit, split, end in TT_MOUSE:
+        if not wanted("mouse/" + pid):
+            continue
         src_dir = os.path.join(root, "mouse-sounds", folder)
         rel = "mouse/" + pid
         clear_pack(rel, release=True)
@@ -345,6 +429,8 @@ def build_tt_mouse(root):
 
 def build_dx_mouse(root):
     for folder, pid, name in DX_MOUSE:
+        if not wanted("mouse/" + pid):
+            continue
         src_dir = os.path.join(root, "soundpacks", "mouse", folder)
         cfg = json.load(open(os.path.join(src_dir, "config.json")))
         sprite = os.path.join(src_dir, cfg["audio_file"])
@@ -371,15 +457,17 @@ def build_dx_mouse(root):
 
 
 def main(argv):
-    if len(argv) != 5:
+    if len(argv) < 6:
         print(__doc__)
         return 2
-    mv, dx, kb, tt = argv[1:]
+    mv, dx, kb, tt, bs = argv[1:6]
+    ONLY.update(argv[6:])
     os.makedirs(OUT, exist_ok=True)
     build_dx(dx)
     build_mv(mv)
     build_mv_multi(mv)
     build_kbsim(kb)
+    build_bucklespring(bs)
     build_tt_mouse(tt)
     build_dx_mouse(dx)
     return 0
