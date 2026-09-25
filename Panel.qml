@@ -320,8 +320,6 @@ Panel {
         font.pixelSize: Style.font.caption
       }
 
-      PanelSeparator { foreground: root.fg }
-
       // ---- keyboard ----
       Column {
         width: parent.width
