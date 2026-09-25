@@ -209,8 +209,9 @@ repeat the same sample: the MX, Everglide and Topre packs are sliced from
 [Mechvibes](https://github.com/hainguyents13/mechvibes) sprites, NovelKeys
 Cream is Mechvibes' letter-by-letter recording by Ryan, and the Model M is
 [bucklespring](https://github.com/zevv/bucklespring)'s sampling of a real
-IBM Model M, one file per Linux keycode. Keys louder than their pack's median
-are trimmed down to it so one hot recording does not jump out.
+IBM Model M, one file per Linux keycode. Every key is levelled toward its
+pack's median loudness so no single recording jumps out or drops away (the
+key-to-key spread in the original seven fell from 9 to 11 dB to 1 to 3 dB).
 
 ### Mouse packs (4)
 
