@@ -4,8 +4,8 @@ Mechanical keyboard and mouse click sounds for [Omarchy](https://omarchy.org)
 (Quattro shell). Thirteen keyboard packs and four mouse packs cut from real
 switch and button recordings: every key is its own sample, keys sound on
 press, panned by key position;
-mouse buttons click on press and release. The default Rust daemon mixes into one PipeWire stream; other CPUs
-fall back to one `pw-play` per event. Everything stays on this machine: no
+mouse buttons click on press and release. Out of the box the Python daemon plays one `pw-play` per event;
+build the optional Rust daemon from source and it mixes into one PipeWire stream instead. Everything stays on this machine: no
 network, no logging, no keystrokes written to disk. A 2.3 MB clone, 8.7 MB on
 disk (the packs are 1.4 MB of audio in 1,345 files, so most of that is your
 filesystem rounding each one up to a block).
@@ -61,8 +61,9 @@ someone ships that, the `input` group is the real door.
 
 - Omarchy Quattro (`omarchy-shell`).
 - PipeWire and a libsndfile that decodes Opus (standard on Omarchy).
-- x86_64 or aarch64 for the Rust daemon (CI attaches both to GitHub releases);
-  anything else runs the Python 3.10+ fallback (stdlib only, needs `pw-play`).
+- Python 3.10+ (stdlib only) and `pw-play` for the default daemon.
+- Optional: a Rust toolchain to build the faster daemon yourself (see
+  [The Rust daemon](#the-rust-daemon)). No binary ships in this repository.
 
 No sudo or pkexec is required at runtime; no systemd units, no extra packages.
 
@@ -89,8 +90,8 @@ Delete those yourself if you want them gone. The `input` group is not removed.
 ```
 omarchy-shell
  └─ Service.qml               reactive state, settings file, JSON over the daemon's pipe
-     └─ bin/omaclackd         launcher: Rust build for this CPU, else the Python daemon
-         ├─ omaclackd-x86_64  Rust: evdev + JSON protocol + one persistent PipeWire stream
+     └─ bin/omaclackd         launcher: your local Rust build for this CPU, else the Python daemon
+         ├─ omaclackd-<arch>  Rust (optional, built by you, git-ignored): evdev + JSON protocol + one persistent PipeWire stream
          │                    (samples pre-decoded with libsndfile, mixed in the RT callback)
          └─ omaclackd.py      Python fallback: same protocol, one `pw-play` per event
 ```
@@ -108,13 +109,13 @@ omarchy-shell
   separate mouse pack and also click on release (`up/<name>.opus`, 30%
   quieter). Velocity scales a
   key from 80% (unhurried) to 100% (the previous key was under 100 ms ago).
-- **Playback (Rust, default)**: every sample of the current keyboard and
+- **Playback (Rust, when built)**: every sample of the current keyboard and
   mouse pack is decoded once with libsndfile (the decoder pw-play uses) into
   48 kHz stereo float. One PipeWire stream owned by the daemon mixes the live
   voices in its realtime callback, filling exactly the frames each cycle asks
   for. The stream is created inactive and only activated while something
   plays; 2.5 s after the last key it deactivates so the sink can suspend.
-- **Playback (Python fallback)**: `pw-play --volume <gain> <key>.opus` per
+- **Playback (Python, default)**: `pw-play --volume <gain> <key>.opus` per
   event, capped at 24 in flight. No audio passes through Python.
 - **Ignore list and calls**: the service watches the focused Wayland toplevel
   and mutes the daemon while its app id is listed, and, via Quickshell's
@@ -258,11 +259,9 @@ tools/dev-reload                                 # nudge the shell when the plug
 ```
 
 `omarchy plugin add` installs by cloning, so anything committed is downloaded
-forever, and neither a stripped ELF nor an Opus file delta-compresses: a
-rebuilt `bin/omaclackd-x86_64` costs another ~700 KB of history, a re-encoded
-pack about 100 KB. Refresh the committed binary on version bumps rather than on
-every build, and re-run `tools/build_sounds.py` only when a pack actually
-changes.
+forever, and an Opus file does not delta-compress: a re-encoded pack costs
+about 100 KB of history. Re-run `tools/build_sounds.py` only when a pack
+actually changes. `bin/omaclackd-*` is git-ignored; never commit a build.
 
 Saving any file under `~/.config/omarchy/plugins/<id>/` hot-reloads the whole
 plugin, service and daemon included. Two gotchas when the plugin directory is a
@@ -296,33 +295,35 @@ once the stream reactivated, so that cell is left blank rather than guessed.
 The Rust in-process build spends its memory on pre-decoded samples for the
 two active packs; the Python daemon spends the same on the interpreter.
 
-### The bundled binary
+### The Rust daemon
 
-`bin/omaclackd-x86_64` is the release build of `daemon/` (about 1,400 lines of
-Rust, dependencies pinned in `daemon/Cargo.lock`), committed because
-`omarchy plugin add` installs by cloning and nothing may be downloaded or
-compiled at install time. It links libc, libpipewire and libsndfile (plus the
-codec libraries libsndfile loads), has no network code (`std::net` is never
-imported; its only socket is the Unix control socket in `$XDG_RUNTIME_DIR`),
-and needs no privileges. To check or replace it:
+`daemon/` is about 1,400 lines of Rust, dependencies pinned in
+`daemon/Cargo.lock`. No prebuilt binary ships: `omarchy plugin add` installs by
+cloning, nothing is downloaded or compiled at install time, so a fresh install
+runs the Python daemon. For the lower latency above, build it from the source
+you just cloned (needs `rust`, `clang` and `pkgconf`; PipeWire and libsndfile
+headers ship with Arch's `libpipewire` and `libsndfile`):
 
 ```bash
-cd daemon && cargo build --release
-install -m755 target/release/omaclackd ../bin/.omaclackd-x86_64.new
-mv ../bin/.omaclackd-x86_64.new ../bin/omaclackd-x86_64   # rename, so a running daemon keeps its file
+cd ~/.config/omarchy/plugins/io.github.diogo7dias.omaclack/daemon
+cargo build --release --locked
+install -m755 target/release/omaclackd ../bin/.omaclackd-$(uname -m).new
+mv ../bin/.omaclackd-$(uname -m).new ../bin/omaclackd-$(uname -m)   # rename, so a running daemon keeps its file
 ```
 
-CI (`.github/workflows/ci.yml`) runs every test and builds the same binary for
-x86_64 and aarch64 on each push. Distrust the committed binary? Delete it and
-`bin/omaclackd` falls back to `bin/omaclackd.py`, the stdlib-only Python
-daemon with the same protocol (about twice the key-to-sound latency, see the
-table above). Other CPUs use that fallback automatically.
+`bin/omaclackd` picks it up on the next start (`omarchy restart shell`). It
+links libc, libpipewire and libsndfile (plus the codec libraries libsndfile
+loads), has no network code (`std::net` is never imported; its only socket is
+the Unix control socket in `$XDG_RUNTIME_DIR`), and needs no privileges beyond
+the `input` group the Python daemon also needs. Delete the file to go back to
+Python. CI (`.github/workflows/ci.yml`) runs every test and builds the daemon
+for x86_64 and aarch64 on each push.
 
 ## Privacy
 
 Omaclack never leaves this computer. There is no account, no telemetry, no
-update ping, no HTTP client. The committed daemon links PipeWire and
-libsndfile only; `grep` the tree for `http`, `AF_INET`, `urllib` and you
+update ping, no HTTP client. Both daemons use PipeWire and libsndfile
+only; `grep` the tree for `http`, `AF_INET`, `urllib` and you
 will not find a runtime caller.
 
 What happens to a key:
