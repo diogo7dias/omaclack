@@ -36,6 +36,13 @@ def slug(s):
     return s or "imported"
 
 
+def inside(src, fn):
+    """src/fn, or None when fn (from an untrusted config.json) points outside src."""
+    root = os.path.realpath(src)
+    f = os.path.realpath(os.path.join(root, str(fn)))
+    return f if f.startswith(root + os.sep) else None
+
+
 def main(argv):
     """Detect the pack format in src, slice each key's sample out of it with
     build_sounds' shared encode/gain helpers, and write the result under
@@ -86,12 +93,12 @@ def main(argv):
     # malicious config.json with an absurd span must not make ffmpeg cut
     # minutes of audio out of the source file.
     if "definitions" in cfg:                       # MechvibesDX
-        sprite = os.path.join(src, cfg.get("audio_file", "sound.ogg"))
+        sprite = inside(src, cfg.get("audio_file", "sound.ogg"))
         names = B.DX_CODES if not mouse else {"MouseLeft": 272, "MouseRight": 273, "MouseMiddle": 274}
         for kname, d in cfg["definitions"].items():
             code = names.get(kname)
             t = d.get("timing") if isinstance(d, dict) else None
-            if code is None or not t:
+            if code is None or not t or sprite is None:
                 continue
             (p0, p1) = t[0]
             (r0, r1) = t[1] if len(t) > 1 else (None, None)
@@ -99,10 +106,10 @@ def main(argv):
                            None if r0 is None else r0 / 1000, None if r0 is None else min(r1 - r0, 200) / 1000)
     elif cfg.get("key_define_type") == "single" or (cfg.get("defines") and isinstance(next(iter(cfg["defines"].values()), None), list)):
         # Mechvibes single: one sprite, defines maps code -> [start_ms, dur_ms]
-        sprite = os.path.join(src, cfg.get("sound", "sound.ogg"))
+        sprite = inside(src, cfg.get("sound", "sound.ogg"))
         for raw, span in cfg["defines"].items():
             code = B.iohook_code(raw)
-            if code is None or not isinstance(span, list):
+            if code is None or not isinstance(span, list) or sprite is None:
                 continue
             up = cfg["defines"].get(str(raw) + "-up")
             codes[code] = (sprite, span[0] / 1000, min(span[1], 250) / 1000,
@@ -111,9 +118,10 @@ def main(argv):
     elif cfg.get("defines"):                       # Mechvibes multi: code -> file
         for raw, fn in cfg["defines"].items():
             code = B.iohook_code(raw)
-            if code is None or not isinstance(fn, str) or not os.path.isfile(os.path.join(src, fn)):
+            f = inside(src, fn) if isinstance(fn, str) else None
+            if code is None or f is None or not os.path.isfile(f):
                 continue
-            codes[code] = (os.path.join(src, fn), 0.0, 0.25, None, None)
+            codes[code] = (f, 0.0, 0.25, None, None)
     else:                                          # plain folder of <code>.<ext>
         for fn in os.listdir(src):
             stem, ext = os.path.splitext(fn)

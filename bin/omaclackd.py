@@ -34,6 +34,7 @@ MAX_CONCURRENT = 24  # cap on simultaneous pw-play processes, so a stuck key or 
 SAMPLE_EXT = (".opus", ".ogg", ".flac", ".wav")
 RELEASE_GAIN = 0.7   # mouse release samples relative to the press volume
 STATS_WINDOW_S = 300.0
+STATS_MAX = 20000     # presses kept in the window; far above human typing, bounds a socket play flood
 
 INPUT_EVENT = struct.Struct("llHHi")  # struct input_event: tv_sec, tv_usec, type, code, value
 EVIOCGNAME = 0x81004506  # _IOC(_IOC_READ, 'E', 0x06, 256)
@@ -62,6 +63,9 @@ def _default_file(path):
 
 
 def find_pack_dir(name, roots):
+    # A pack id is one directory name inside a root, never a path out of it.
+    if name in ("", ".", "..") or "/" in name:
+        return None
     for root in roots:
         d = os.path.join(root, name)
         if _default_file(d):
@@ -207,7 +211,7 @@ class Stats:
         self.counts[code] += 1
         self.total += 1
         cutoff = now - STATS_WINDOW_S
-        while self.times and self.times[0][0] < cutoff:
+        while self.times and (self.times[0][0] < cutoff or len(self.times) > STATS_MAX):
             _, c = self.times.popleft()
             self.counts[c] -= 1
             if self.counts[c] <= 0:
@@ -359,7 +363,7 @@ class Controller:
             if cmd == "quit":
                 return {"ok": True, "quit": True}
             return {"ok": False, "error": "unknown cmd"}
-        except (FileNotFoundError, ValueError) as e:
+        except (FileNotFoundError, ValueError, TypeError, OverflowError) as e:
             return {"ok": False, "error": str(e)}
 
 
@@ -476,9 +480,10 @@ class LineChannel:
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                msg = json.loads(line)
             except ValueError:
-                out.append({"cmd": "__bad__"})
+                msg = None
+            out.append(msg if isinstance(msg, dict) else {"cmd": "__bad__"})
         if len(self.rbuf) > MAX_LINE:
             self.rbuf = b""
             self.eof = True

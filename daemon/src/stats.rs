@@ -5,6 +5,8 @@ use std::collections::{HashMap, VecDeque};
 
 // 5-minute ring for "top keys" and rhythm; matches README.
 const WINDOW_S: f64 = 300.0;
+/// Presses kept in the window; far above human typing, bounds a socket play flood.
+const MAX_TIMES: usize = 20000;
 
 pub struct Stats {
     times: VecDeque<(f64, u16)>, // (t, code) last 5 min; counts follow the window
@@ -25,7 +27,7 @@ impl Stats {
         *self.counts.entry(code).or_insert(0) += 1;
         self.total += 1;
         while let Some(&(t, c)) = self.times.front() {
-            if t < now - WINDOW_S {
+            if t < now - WINDOW_S || self.times.len() > MAX_TIMES {
                 self.times.pop_front();
                 if let Some(n) = self.counts.get_mut(&c) {
                     *n -= 1;
@@ -61,6 +63,14 @@ impl Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_is_bounded() {
+        let mut s = Stats::new();
+        for i in 0..MAX_TIMES + 500 { s.press(30, 1.0 + i as f64 * 1e-6); }
+        assert_eq!(s.times.len(), MAX_TIMES);
+        assert_eq!(s.counts.values().sum::<u64>(), MAX_TIMES as u64);
+    }
 
     #[test]
     fn kpm_is_presses_in_last_minute() {

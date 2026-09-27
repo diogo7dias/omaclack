@@ -16,6 +16,8 @@ fn default_file(dir: &Path) -> Option<PathBuf> {
 /// First root (shipped before user) that has this pack name with a default
 /// sample; presence of `default.<ext>` is what makes a directory a "pack" at all.
 pub fn find_pack_dir(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    // A pack id is one directory name inside a root, never a path out of it.
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') { return None; }
     roots.iter().map(|r| r.join(name)).find(|d| default_file(d).is_some())
 }
 
@@ -176,6 +178,18 @@ mod tests {
     use std::fs;
 
     fn write(path: &Path, bytes: &[u8]) { fs::write(path, bytes).unwrap(); }
+
+    #[test]
+    fn pack_name_cannot_leave_its_root() {
+        let d = std::env::temp_dir().join(format!("omaclack-esc-{}", std::process::id()));
+        fs::create_dir_all(d.join("root")).unwrap();
+        write(&d.join("default.opus"), b"");
+        let roots = vec![d.join("root")];
+        for name in [d.to_str().unwrap(), "..", ".", "", "x/../.."] {
+            assert!(find_pack_dir(name, &roots).is_none(), "{}", name);
+        }
+        fs::remove_dir_all(&d).unwrap();
+    }
 
     #[test]
     fn lookup_order_explicit_file_then_keys_map_then_default() {

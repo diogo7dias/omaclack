@@ -144,6 +144,19 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(self.ctl.pack.name, "mx-blue")
         self.assertEqual(self.ctl.mouse_pack.name, "logitech")
 
+    def test_pack_name_cannot_leave_its_root(self):
+        tmp = tempfile.mkdtemp()
+        open(os.path.join(tmp, "default.opus"), "wb").close()
+        for name in (tmp, "..", ".", "", "mx-blue/../mx-brown"):
+            self.assertFalse(self.ctl.handle({"cmd": "load", "pack": name})["ok"], name)
+        self.assertEqual(self.ctl.pack.name, "mx-blue")
+
+    def test_stats_window_is_bounded(self):
+        for i in range(D.STATS_MAX + 500):
+            self.ctl.stats.press(30, 1.0 + i * 1e-6)
+        self.assertEqual(len(self.ctl.stats.times), D.STATS_MAX)
+        self.assertEqual(sum(self.ctl.stats.counts.values()), D.STATS_MAX)
+
     def test_volumes_clamped_and_separate(self):
         self.assertEqual(self.ctl.handle({"cmd": "volume", "value": 250})["volume"], 100)
         self.assertEqual(self.ctl.handle({"cmd": "mousevolume", "value": 30})["mouse_volume"], 30)
@@ -343,6 +356,35 @@ class SocketRoundTripTest(unittest.TestCase):
             self.assertTrue(json.loads(f.readline())["ok"])
         finally:
             proc.kill()
+
+    def test_malformed_messages_never_kill_daemon(self):
+        tmp = tempfile.mkdtemp()
+        sock = os.path.join(tmp, "ctl.sock")
+        proc = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock], stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            for _ in range(50):
+                if os.path.exists(sock):
+                    break
+                time.sleep(0.05)
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c.connect(sock)
+            c.settimeout(2)
+            f = c.makefile("rwb", buffering=0)
+            f.readline()  # hello
+            for line in ('[1]', '5', 'null', '"x"', '{"cmd":"play","key":1e999}', '{"cmd":"play","key":[]}',
+                         '{"cmd":"volume","value":null}', '{"cmd":"volume","value":1e999}',
+                         '{"cmd":"load","pack":["a"]}', '{"cmd":"load","pack":"/tmp"}'):
+                f.write((line + "\n").encode())
+                r = json.loads(f.readline())  # any reply at all: the daemon survived
+                if '"load"' in line:
+                    self.assertFalse(r["ok"], line)
+            f.write(b'{"cmd":"ping","t":1}\n')
+            self.assertTrue(json.loads(f.readline())["ok"])
+        finally:
+            proc.kill()
+            err = proc.stderr.read().decode()
+            self.assertNotIn("Traceback", err, err)
 
     def test_second_daemon_refused_by_lock(self):
         tmp = tempfile.mkdtemp()
