@@ -447,6 +447,9 @@ class InputReader:
 
 # ---------------------------------------------------------------- server
 
+MAX_LINE = 65536  # longest accepted message; a peer that exceeds it is dropped
+
+
 class LineChannel:
     """Newline-delimited JSON over a pair of fds."""
 
@@ -476,6 +479,9 @@ class LineChannel:
                 out.append(json.loads(line))
             except ValueError:
                 out.append({"cmd": "__bad__"})
+        if len(self.rbuf) > MAX_LINE:
+            self.rbuf = b""
+            self.eof = True
         return out
 
     def send(self, obj):

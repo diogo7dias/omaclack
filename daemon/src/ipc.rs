@@ -8,6 +8,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
+/// Longest accepted message; a peer that exceeds it is dropped.
+const MAX_LINE: usize = 65536;
+
 /// One newline-delimited JSON channel over a pair of raw fds (read and write
 /// may be the same fd, as for a socket, or different, as for the shell's
 /// stdin/stdout pipe). Non-blocking; `eof` is set once the peer has gone away.
@@ -46,6 +49,7 @@ impl LineChannel {
             if s.is_empty() { continue; }
             out.push(serde_json::from_str::<Value>(&s).unwrap_or_else(|_| serde_json::json!({"cmd": "__bad__"})));
         }
+        if self.rbuf.len() > MAX_LINE { self.rbuf = Vec::new(); self.eof = true; }
         out
     }
 

@@ -312,6 +312,38 @@ class SocketRoundTripTest(unittest.TestCase):
             err = proc.stderr.read().decode()
             self.assertEqual(err, "", err)
 
+    def test_oversized_line_drops_client(self):
+        tmp = tempfile.mkdtemp()
+        sock = os.path.join(tmp, "ctl.sock")
+        proc = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock], stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(50):
+                if os.path.exists(sock):
+                    break
+                time.sleep(0.05)
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c.connect(sock)
+            c.settimeout(3)
+            c.recv(4096)  # hello
+            try:
+                for _ in range(64):  # 4 MiB, no newline
+                    c.sendall(b"x" * 65536)
+                closed = c.recv(1) == b""
+            except (BrokenPipeError, ConnectionResetError):
+                closed = True
+            self.assertTrue(closed, "daemon kept buffering an unterminated line")
+            c.close()
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c.connect(sock)
+            c.settimeout(2)
+            f = c.makefile("rwb", buffering=0)
+            f.readline()  # hello
+            f.write(b'{"cmd":"ping","t":1}\n')
+            self.assertTrue(json.loads(f.readline())["ok"])
+        finally:
+            proc.kill()
+
     def test_second_daemon_refused_by_lock(self):
         tmp = tempfile.mkdtemp()
         sock = os.path.join(tmp, "ctl.sock")
