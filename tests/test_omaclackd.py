@@ -357,6 +357,39 @@ class SocketRoundTripTest(unittest.TestCase):
         finally:
             proc.kill()
 
+    def test_client_that_never_reads_is_dropped(self):
+        tmp = tempfile.mkdtemp()
+        sock = os.path.join(tmp, "ctl.sock")
+        proc = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock], stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(50):
+                if os.path.exists(sock):
+                    break
+                time.sleep(0.05)
+            stalled = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            stalled.connect(sock)
+            stalled.setblocking(False)
+            ping = b'{"cmd":"ping","t":1}\n' * 4096
+            deadline = time.time() + 2
+            while time.time() < deadline:  # flood requests, never read a reply
+                try:
+                    stalled.send(ping)
+                except BlockingIOError:
+                    time.sleep(0.01)
+                except OSError:
+                    break
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            c.connect(sock)
+            c.settimeout(3)
+            f = c.makefile("rwb", buffering=0)
+            f.readline()  # hello
+            f.write(b'{"cmd":"ping","t":2}\n')
+            self.assertEqual(json.loads(f.readline())["pong"], 2)
+            stalled.close()
+        finally:
+            proc.kill()
+
     def test_malformed_messages_never_kill_daemon(self):
         tmp = tempfile.mkdtemp()
         sock = os.path.join(tmp, "ctl.sock")

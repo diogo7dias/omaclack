@@ -53,10 +53,10 @@ impl LineChannel {
         out
     }
 
-    /// Write one JSON line, retrying on EINTR/EWOULDBLOCK (briefly polling for
-    /// writability) so a slow reader never loses a line; any other write error
-    /// marks the channel as EOF instead of propagating, since a dead peer is not
-    /// a fatal condition for the daemon.
+    /// Write one JSON line, retrying only on EINTR. Any other failure,
+    /// including EWOULDBLOCK from a socket client that stopped reading, marks
+    /// the channel as EOF so the caller drops the peer: waiting on it would
+    /// stall the single event loop and with it keyboard processing.
     pub fn send(&mut self, v: &Value) {
         let mut data = serde_json::to_vec(v).unwrap_or_default();
         data.push(b'\n');
@@ -64,14 +64,7 @@ impl LineChannel {
         while off < data.len() {
             let n = unsafe { libc::write(self.wfd, data[off..].as_ptr() as *const libc::c_void, data.len() - off) };
             if n <= 0 {
-                let err = io::Error::last_os_error();
-                if n < 0 && err.kind() == io::ErrorKind::Interrupted { continue; }
-                if n < 0 && err.kind() == io::ErrorKind::WouldBlock {
-                    // Slow reader (socket client): wait briefly rather than drop the line.
-                    let mut p = libc::pollfd { fd: self.wfd, events: libc::POLLOUT, revents: 0 };
-                    unsafe { libc::poll(&mut p, 1, 200) };
-                    continue;
-                }
+                if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted { continue; }
                 self.eof = true;
                 return;
             }
