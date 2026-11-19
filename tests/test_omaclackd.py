@@ -1,6 +1,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import shutil
 import os
 import socket
 import stat
@@ -476,6 +477,33 @@ class SocketRoundTripTest(unittest.TestCase):
             time.sleep(0.05)
         p.stdin.close()
         self.assertEqual(p.wait(timeout=3), 0)
+
+    @unittest.skipUnless(os.environ.get("OMACLACKD_BIN") and shutil.which("pipewire"),
+                         "Rust daemon and a pipewire binary needed")
+    def test_rust_daemon_exits_when_pipewire_goes_away(self):
+        # PipeWire is restarted after every resume; a daemon that stays alive on
+        # its dead connection is silent until someone restarts the shell.
+        tmp = tempfile.mkdtemp()
+        env = dict(os.environ, XDG_RUNTIME_DIR=tmp)
+        env.pop("PIPEWIRE_REMOTE", None)
+        pw = subprocess.Popen(["pipewire"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = None
+        try:
+            for _ in range(60):
+                if os.path.exists(os.path.join(tmp, "pipewire-0")):
+                    break
+                time.sleep(0.05)
+            sock = os.path.join(tmp, "ctl.sock")
+            p = subprocess.Popen(DAEMON_CMD + ["--socket=" + sock], env=env, stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            hello = json.loads(p.stdout.readline())
+            self.assertEqual(hello["backend"], "inprocess")
+            pw.terminate()
+            self.assertEqual(p.wait(timeout=5), 0)
+        finally:
+            for proc in (pw, p):
+                if proc and proc.poll() is None:
+                    proc.kill()
 
 
 

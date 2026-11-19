@@ -393,6 +393,15 @@ fn pw_thread(mix: Arc<Mutex<Mix>>, rx: pipewire::channel::Receiver<Msg>,
     }
     let _ = ready.send(Ok(()));
 
+    // PipeWire went away (it is restarted after every resume here): this
+    // connection never recovers, so ask main() to exit cleanly and let the
+    // shell relaunch us against the new server. id 0 is the core itself.
+    let _core_listener = core.add_listener_local()
+        .error(|id, _seq, res, _msg| {
+            if id == 0 && res == -libc::EPIPE { unsafe { libc::kill(libc::getpid(), libc::SIGTERM); } }
+        })
+        .register();
+
     let ml = mainloop.clone();
     let mix_r = mix.clone();
     let state_r = state.clone();
